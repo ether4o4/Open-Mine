@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
@@ -56,7 +57,7 @@ class MainActivity:ComponentActivity(){
  var selected by remember{mutableIntStateOf(p.getInt("screen",0))}
  var animations by remember{mutableStateOf(p.getBoolean("animations",true))}
  var haptics by remember{mutableStateOf(p.getBoolean("haptics",true))}
- fun go(i:Int){selected=i;p.edit().putInt("screen",i).apply();if(haptics)c.findViewById<android.view.View>(android.R.id.content)?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)}
+ fun go(i:Int){selected=i;p.edit().putInt("screen",i).apply();if(haptics)(c as? android.app.Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)}
  MaterialTheme(colorScheme=darkColorScheme(background=BG,surface=PANEL,primary=CYAN,secondary=PURPLE)){
   Surface(Modifier.fillMaxSize(),color=BG){Column{Header();Row(Modifier.fillMaxSize()){
    Rail(selected,::go);Box(Modifier.weight(1f).fillMaxHeight()){
@@ -104,15 +105,29 @@ class MainActivity:ComponentActivity(){
    for(k in 1..4)drawCircle(CYAN.copy(alpha=.08f),r*k/4,center,style=Stroke(1f))
    for(i in 0 until 32){val a=i*PI/16;val q=Offset(center.x+cos(a).toFloat()*r*1.23f,center.y+sin(a).toFloat()*r*1.23f);drawCircle(if(i%4==0)CYAN.copy(alpha=.55f)else BLUE.copy(alpha=.16f),if(i%4==0)2.5f else 1f,q)}
    drawCircle(CYAN.copy(alpha=.07f*pulse),r*.48f,center);drawCircle(BLUE.copy(alpha=.12f),r*.22f,center)
-   drawRoundRect(Brush.linearGradient(listOf(Color(0xFF101D55),Color(0xFF14103D))),center-Offset(38f,38f),Size(76f,76f),CornerRadius(14.dp.toPx()),style=Fill)
+   drawRoundRect(Brush.linearGradient(listOf(Color(0xFF101D55),Color(0xFF14103D))),center-Offset(38f,38f),Size(76f,76f),CornerRadius(14.dp.toPx()),style=androidx.compose.ui.graphics.drawscope.Fill)
    drawRoundRect(CYAN.copy(alpha=.7f),center-Offset(38f,38f),Size(76f,76f),CornerRadius(14.dp.toPx()),style=Stroke(2f))
    rotate(-45f,center){drawRoundRect(PURPLE.copy(alpha=.85f),center-Offset(18f,18f),Size(36f,36f),CornerRadius(7.dp.toPx()),style=Stroke(4f))}
   };Column(Modifier.align(Alignment.Center).padding(top=8.dp),horizontalAlignment=Alignment.CenterHorizontally){Text(label,color=MAIN,fontSize=12.sp);Text("01",color=BLUE,fontSize=22.sp);Text("WORKSPACE",color=DIM,fontSize=7.sp,letterSpacing=2.sp)}
    BoxWithConstraints(Modifier.fillMaxSize()){val cx=maxWidth.value/2;val cy=maxHeight.value*.39f;val rr=minOf(maxWidth.value,maxHeight.value)*.29f
-    items.forEachIndexed{i,o->{val a=Math.toRadians(-90+i*360.0/items.size);val x=cx+cos(a)*rr-58;val y=cy+sin(a)*rr-34
-     Surface(Modifier.offset(x.dp,y.dp).width(116.dp).height(68.dp).clip(RoundedCornerShape(10.dp)).clickable{},color=Color(0xDD091526),shadowElevation=7.dp){
-      Column(Modifier.padding(7.dp)){Row(verticalAlignment=Alignment.CenterVertically){Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(17.dp));Spacer(Modifier.width(4.dp));Text("%02d".format(i+1),color=DIM,fontSize=7.sp)}
-       Text(o.title,color=MAIN,fontSize=9.sp,fontWeight=FontWeight.SemiBold);Text(o.sub,color=DIM,fontSize=6.sp)}
+    items.forEachIndexed { i, o ->
+     val a = Math.toRadians(-90 + i * 360.0 / items.size)
+     val x = cx + cos(a) * rr - 58
+     val y = cy + sin(a) * rr - 34
+     Surface(
+      Modifier.offset(x.dp, y.dp).width(116.dp).height(68.dp)
+       .clip(RoundedCornerShape(10.dp)).clickable{},
+      color=Color(0xDD091526), shadowElevation=7.dp
+     ){
+      Column(Modifier.padding(7.dp)){
+       Row(verticalAlignment=Alignment.CenterVertically){
+        Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(17.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("%02d".format(i+1),color=DIM,fontSize=7.sp)
+       }
+       Text(o.title,color=MAIN,fontSize=9.sp,fontWeight=FontWeight.SemiBold)
+       Text(o.sub,color=DIM,fontSize=6.sp)
+      }
      }
     }}
    }
