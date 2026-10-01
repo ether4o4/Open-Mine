@@ -20,3 +20,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+kotlin {
+    jvmToolchain(17)
+}
