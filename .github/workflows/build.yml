@@ -12,6 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,8 +26,8 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses >/dev/null || true
 
       - name: Install Android SDK packages
         run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
@@ -32,11 +35,16 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x gradlew
 
+      - name: Compile checks
+        run: ./gradlew --no-daemon :app:compileDebugKotlin
+
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
       - name: Verify APK
-        run: test -s app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -44,3 +52,4 @@ jobs:
           name: Open-Mine-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
