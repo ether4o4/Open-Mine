@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Mine Object Format v1",
+  "type": "object",
+  "required": [
+    "OBJECT_VERSION","OBJECT_ID","OBJECT_TYPE","OBJECT_STATUS","OBJECT_TITLE",
+    "OBJECT_SUMMARY","OBJECT_TAGS","OBJECT_SOURCE","OBJECT_CREATED","OBJECT_UPDATED",
+    "CONTEXT_INDEX","CONTENT","RELATIONSHIPS","RETRIEVAL","VERIFICATION"
+  ],
+  "properties": {
+    "OBJECT_VERSION": {"const": 1},
+    "OBJECT_ID": {"type":"string","pattern":"^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+    "OBJECT_TYPE": {"enum":["MODEL","PROJECT","CONNECTOR","KNOWLEDGE","SKILL","MISSION","VIBE","TOOL","FILE","BROWSER","TERMINAL","DIAGNOSTIC"]},
+    "OBJECT_STATUS": {"enum":["DRAFT","TESTED","VERIFIED","PROVEN","ARCHIVED"]},
+    "OBJECT_TITLE": {"type":"string","minLength":1},
+    "OBJECT_SUMMARY": {"type":"string","minLength":1},
+    "OBJECT_TAGS": {"type":"array","items":{"type":"string"}},
+    "OBJECT_SOURCE": {"type":"string","minLength":1},
+    "OBJECT_CREATED": {"type":"string","format":"date"},
+    "OBJECT_UPDATED": {"type":"string","format":"date"}
+  }
+}
