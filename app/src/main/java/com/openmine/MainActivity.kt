@@ -65,7 +65,7 @@ class MainActivity:ComponentActivity(){
   Surface(Modifier.fillMaxSize(),color=BG){Column{Header();Row(Modifier.fillMaxSize()){
    Rail(selected,::go);Box(Modifier.weight(1f).fillMaxHeight()){
     when(selected){
-     11->SettingsScreen(animations,{v->animations=v;p.edit().putBoolean("animations",v).apply()},haptics,{v->haptics=v;p.edit().putBoolean("haptics",v).apply()})
+     11->DiagnosticsScreen(c)\n     12->SettingsScreen(animations,{v->animations=v;p.edit().putBoolean("animations",v).apply()},haptics,{v->haptics=v;p.edit().putBoolean("haptics",v).apply()})
      3->Knowledge(c)
      4->ListScreen("SKILLS",listOf("Android Build Skill","Vault Verification","Local Model Setup","UI Composition"))
      5->ListScreen("MISSIONS",listOf("Build Open Mine","Verify Vault","Connect Local AI","Ship APK"))
@@ -208,6 +208,20 @@ class MainActivity:ComponentActivity(){
 @Composable fun Field(label:String,value:String,on:(String)->Unit,single:Boolean=true){OutlinedTextField(value,on,Modifier.fillMaxWidth(),singleLine=single,label={Text(label,fontSize=8.sp)},textStyle=LocalTextStyle.current.copy(fontSize=9.sp))}
 
 @Composable fun ListScreen(title:String,items:List<String>){LazyColumn(Modifier.fillMaxSize().padding(13.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){item{Text(title,color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Reusable Open Mine workspace objects",color=DIM,fontSize=10.sp)};items(items){x->Surface(Modifier.fillMaxWidth(),color=PANEL,shape=RoundedCornerShape(12.dp)){Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.AutoAwesome,null,tint=CYAN);Spacer(Modifier.width(9.dp));Text(x,color=MAIN,fontSize=13.sp)}}}}}
+
+@Composable fun DiagnosticsScreen(c:Context){
+ val objects=remember{OpenMineObjectStore.all(c)}
+ val indexFile=java.io.File(c.filesDir,"open_mine_index.json")
+ LazyColumn(Modifier.fillMaxSize().padding(13.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+  item{Text("DIAGNOSTICS",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Live Open Mine storage + index health",color=DIM,fontSize=9.sp)}
+  item{Diag("OBJECT STORE",objects.size.toString()+" valid objects",objects.isNotEmpty()||true)}
+  item{Diag("RETRIEVAL INDEX",if(indexFile.exists()) (indexFile.length()/1024).toString()+" KB" else "not built",indexFile.exists())}
+  item{Diag("STRICT FORMAT","V1 validator active",true)}
+  item{Diag("LOCAL STORAGE",c.filesDir.absolutePath,true)}
+  item{OutlinedButton({OpenMineObjectStore.rebuildIndex(c)},Modifier.fillMaxWidth()){Text("REBUILD + VERIFY INDEX",fontSize=9.sp)}}
+ }
+}
+@Composable fun Diag(t:String,s:String,ok:Boolean){Surface(color=PANEL,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){Row(Modifier.padding(11.dp),verticalAlignment=Alignment.CenterVertically){Icon(if(ok)Icons.Default.CheckCircle else Icons.Default.Warning,null,tint=if(ok)CYAN else Color(0xFFFFB24A),modifier=Modifier.size(18.dp));Spacer(Modifier.width(8.dp));Column{Text(t,color=MAIN,fontSize=10.sp,fontWeight=FontWeight.SemiBold);Text(s,color=DIM,fontSize=8.sp)}}}}
 
 @Composable fun SettingsScreen(a:Boolean,setA:(Boolean)->Unit,h:Boolean,setH:(Boolean)->Unit){Column(Modifier.fillMaxSize().padding(15.dp)){Text("SETTINGS",color=MAIN,fontSize=25.sp,fontWeight=FontWeight.Bold);Text("Open Mine workspace configuration",color=DIM,fontSize=10.sp);Spacer(Modifier.height(14.dp));Setting("Animations","Orbital motion and interface transitions",a,setA);Setting("Haptic feedback","Touch confirmation for navigation",h,setH);Setting("Proven knowledge only","Prefer verified vault entries for context",true,{})}}
 @Composable fun Setting(t:String,s:String,v:Boolean,on:(Boolean)->Unit){Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),color=PANEL,shape=RoundedCornerShape(12.dp)){Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(t,color=MAIN,fontSize=12.sp);Text(s,color=DIM,fontSize=8.sp)};Switch(v,on)}}}
