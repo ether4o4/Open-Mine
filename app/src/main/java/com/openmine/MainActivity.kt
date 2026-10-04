@@ -57,6 +57,10 @@ class MainActivity:ComponentActivity(){
  var selected by remember{mutableIntStateOf(p.getInt("screen",0))}
  var animations by remember{mutableStateOf(p.getBoolean("animations",true))}
  var haptics by remember{mutableStateOf(p.getBoolean("haptics",true))}
+ var active by remember{mutableStateOf(p.getString("active","Qwen 3.5 2B") ?: "Qwen 3.5 2B")}
+ var contextItems by remember{mutableStateOf(p.getStringSet("context",emptySet())?.toSet() ?: emptySet())}
+ fun selectObject(o:Orb){active=o.title;p.edit().putString("active",o.title).apply()}
+ fun toggleContext(o:Orb){contextItems=if(o.title in contextItems) contextItems-o.title else contextItems+o.title;p.edit().putStringSet("context",contextItems).apply()}
  fun go(i:Int){selected=i;p.edit().putInt("screen",i).apply();if(haptics)(c as? android.app.Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)}
  MaterialTheme(colorScheme=darkColorScheme(background=BG,surface=PANEL,primary=CYAN,secondary=PURPLE)){
   Surface(Modifier.fillMaxSize(),color=BG){Column{Header();Row(Modifier.fillMaxSize()){
@@ -67,7 +71,7 @@ class MainActivity:ComponentActivity(){
      4->ListScreen("SKILLS",listOf("Android Build Skill","Vault Verification","Local Model Setup","UI Composition"))
      5->ListScreen("MISSIONS",listOf("Build Open Mine","Verify Vault","Connect Local AI","Ship APK"))
      6->ListScreen("TOOLS",listOf("Terminal","File Inspector","Model Runner","Git Helper"))
-     else->Orbit(selected,animations)
+     else->Orbit(selected,animations,active,contextItems,::selectObject,::toggleContext)
     }
    }
   }}}}
@@ -90,7 +94,7 @@ class MainActivity:ComponentActivity(){
  Icon(n.icon,null,tint=if(i==selected)CYAN else DIM,modifier=Modifier.size(17.dp));Spacer(Modifier.width(5.dp));Column{Text(n.name,color=if(i==selected)MAIN else DIM,fontSize=7.sp);Text("%02d".format(i+1),color=DIM,fontSize=6.sp)}
 }}}}
 
-@Composable fun Orbit(screen:Int,animations:Boolean){
+@Composable fun Orbit(screen:Int,animations:Boolean,active:String,contextItems:Set<String>,onSelect:(Orb)->Unit,onToggleContext:(Orb)->Unit){
  val pulse=if(animations)rememberInfiniteTransition(label="orbit").animateFloat(.72f,1f,infiniteRepeatable(tween(1600),RepeatMode.Reverse),label="pulse").value else 1f
  val label=NAV[screen].name
  val items=when(screen){
@@ -116,7 +120,7 @@ class MainActivity:ComponentActivity(){
      val y = cy + sin(a) * rr - 34
      Surface(
       Modifier.offset(x.dp, y.dp).width(116.dp).height(68.dp)
-       .clip(RoundedCornerShape(10.dp)).clickable{},
+       .clip(RoundedCornerShape(10.dp)).clickable{onSelect(o)},
       color=Color(0xDD091526), shadowElevation=7.dp
      ){
       Column(Modifier.padding(7.dp)){
@@ -132,20 +136,20 @@ class MainActivity:ComponentActivity(){
     }}
    }
   }
-  ContextPanel(screen);Carousel(items.take(6))
+  ContextPanel(screen,items.firstOrNull{it.title==active} ?: items.firstOrNull(),contextItems,onToggleContext);Carousel(items.take(6),onSelect)
  }
 }
 
-@Composable fun ContextPanel(screen:Int){val title=when(screen){0->"Qwen 3.5 2B";1->"Open Mine";2->"GitHub MCP";else->"Engineering Vault"};val sub=when(screen){0->"Abliterated · GGUF · Local";1->"Android AI Workspace Environment";2->"Repository & Development Tools";else->"Project Specs & Documentation"}
+@Composable fun ContextPanel(screen:Int,current:Orb?,contextItems:Set<String>,onToggleContext:(Orb)->Unit){val title=current?.title ?: when(screen){0->"AI MODELS";1->"PROJECTS";2->"CONNECTORS";else->"WORKSPACE"};val sub=current?.sub ?: "Open Mine workspace object"}
  Column(Modifier.fillMaxWidth().padding(7.dp).clip(RoundedCornerShape(14.dp)).background(PANEL).padding(12.dp)){
   Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(title,color=MAIN,fontSize=20.sp,fontWeight=FontWeight.Bold);Text(sub,color=DIM,fontSize=9.sp)};Icon(Icons.Default.AutoAwesome,null,tint=CYAN,modifier=Modifier.size(36.dp))}
   Spacer(Modifier.height(7.dp));Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("OVERVIEW","CONTEXT","TOOLS","RELATED").forEach{Text(it,color=if(it=="OVERVIEW")CYAN else DIM,fontSize=7.sp)}}
   HorizontalDivider(color=Color(0x334C78FF));Spacer(Modifier.height(5.dp));Text("Active workspace object. Inspect it, add it to context, or open the full object view.",color=DIM,fontSize=8.sp,lineHeight=11.sp)
-  Spacer(Modifier.height(6.dp));Row(horizontalArrangement=Arrangement.spacedBy(6.dp),modifier=Modifier.fillMaxWidth()){Button({},Modifier.weight(1f),colors=ButtonDefaults.buttonColors(containerColor=CYAN.copy(alpha=.18f),contentColor=CYAN),shape=RoundedCornerShape(8.dp)){Text("ADD TO CONTEXT",fontSize=8.sp)};OutlinedButton({},Modifier.width(48.dp),shape=RoundedCornerShape(8.dp)){Text("…")}}
+  Spacer(Modifier.height(6.dp));Row(horizontalArrangement=Arrangement.spacedBy(6.dp),modifier=Modifier.fillMaxWidth()){Button({current?.let{onToggleContext(it)}},Modifier.weight(1f),colors=ButtonDefaults.buttonColors(containerColor=CYAN.copy(alpha=.18f),contentColor=CYAN),shape=RoundedCornerShape(8.dp)){Text(if(current!=null && current.title in contextItems)"IN CONTEXT" else "ADD TO CONTEXT",fontSize=8.sp)};OutlinedButton({},Modifier.width(48.dp),shape=RoundedCornerShape(8.dp)){Text("…")}}
  }
 }
 
-@Composable fun Carousel(items:List<Orb>){Row(Modifier.fillMaxWidth().height(61.dp).padding(6.dp),horizontalArrangement=Arrangement.spacedBy(5.dp)){items.forEach{o->Surface(Modifier.weight(1f).fillMaxHeight(),color=PANEL,shape=RoundedCornerShape(8.dp)){Column(Modifier.padding(4.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(17.dp));Text(o.title,color=DIM,fontSize=5.sp,maxLines=1)}}}}}
+@Composable fun Carousel(items:List<Orb>,onSelect:(Orb)->Unit){Row(Modifier.fillMaxWidth().height(61.dp).padding(6.dp),horizontalArrangement=Arrangement.spacedBy(5.dp)){items.forEach{o->Surface(Modifier.weight(1f).fillMaxHeight().clickable{onSelect(o)},color=PANEL,shape=RoundedCornerShape(8.dp)){Column(Modifier.padding(4.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(17.dp));Text(o.title,color=DIM,fontSize=5.sp,maxLines=1)}}}}}
 
 @Composable fun ListScreen(title:String,items:List<String>){LazyColumn(Modifier.fillMaxSize().padding(13.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){item{Text(title,color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Reusable Open Mine workspace objects",color=DIM,fontSize=10.sp)};items(items){x->Surface(Modifier.fillMaxWidth(),color=PANEL,shape=RoundedCornerShape(12.dp)){Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.AutoAwesome,null,tint=CYAN);Spacer(Modifier.width(9.dp));Text(x,color=MAIN,fontSize=13.sp)}}}}}
 
