@@ -34,7 +34,7 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
       - name: Install Android SDK packages
-        run: '"$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"'
+        run: '"$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;35.0.0"'
 
       - name: Make Gradle executable
         run: chmod +x gradlew
@@ -57,3 +57,10 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Upload unsigned bundle and verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-bundle-and-reports
+          path: |
+            app/build/outputs/bundle/release/app-release.aab
+            app/build/reports/

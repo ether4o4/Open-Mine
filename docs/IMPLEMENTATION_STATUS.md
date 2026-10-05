@@ -1,34 +1,28 @@
-# Verified development checkpoint
+# Open Mine 0.2.0 development test build
 
-This is a development build, not a finished standalone AI assistant or a Play release.
+Independent Open Mine incorporates selected existing MVE code. It does not require the MVE app. Current priority is a functional phone-test APK; Play packaging is deferred by user instruction.
 
 ## Implemented
 
-- User-owned UTF-8 `.omd` records persist in app-private storage independently of model selection.
-- Required labels, duplicate sections/labels, unlabeled content, UTC timestamps, priority and IDs are validated. Duplicate IDs are rejected without overwriting prior knowledge. Writes use atomic replacement. Imports are limited to 1 MiB.
-- Records produce labeled index chunks; exact-token retrieval is available in Knowledge and Library Tools.
-- Categories show actual imported records, rather than fictional installed models or connected services. Inspect and context-selection controls work on persisted IDs.
-- AI Chat implements HTTPS OpenAI-compatible `chat/completions`, genuine network errors and model responses, retrieved source context, and a bounded read-only `search_library` function. API keys remain session-only. Up to two tool rounds and three calls per round are permitted; other tool names are rejected.
-- Library context is transmitted to the model endpoint chosen by the user. Imported content is treated as reference data, not executable instructions. No shell commands or external service actions are allowed.
-- Navigation indices, system insets, scrolling, readable text, back/cancel paths, transitions and orbital record selection were repaired.
-- Gradle wrapper and Java 17 target alignment are present. CI uses the installed SDK manager's full path and runs unit tests, lint, APK and AAB builds.
+- Persistent labeled `.omd` knowledge, strict bounded UTF-8 imports, duplicate-ID protection, atomic writes, exact-token retrieval and labeled source chunks.
+- Actual imported category records, orbital selection, context selection by ID, inspect controls, navigation/back/cancel fixes, system insets, scrolling and transitions.
+- Incorporated MVE PRoot executor, rootfs extraction/configuration, PRoot/talloc binaries and GGUF provisioning/start/stop/status script. Source revision and licenses: `third-party/REUSE.md`.
+- Open Mine-owned Linux storage/UI; SHA-256-verified rootfs download and staged extraction; GGUF imports; checksum-verified prebuilt engine; successful health check required before reporting a started model.
+- Manual shell commands require review/confirmation, have a 30-second timeout and bounded output. Engine operations support cancellation and a 30-minute process cap. Keep the app open during setup.
+- Genuine OpenAI-compatible inference through on-device loopback (`http://127.0.0.1:8080/v1`, alias `local`) or an explicit HTTPS endpoint. Retrieved sources are sent to the endpoint; keys remain session-only.
+- Bounded `search_library` and fixed read-only `linux_system_info` (`uname -a`) model tools. Other names and arbitrary model commands are rejected. Knowledge is reference data, not execution authority.
+- API 36 / Java 17 / AGP 8.10.1, Gradle wrapper, CI tests/lint/APK/AAB and artifact uploads.
 
-## Known limitations and unverified coverage
+## Validation and remaining coverage
 
-- No Android GGUF JNI/NDK runtime, model weight import/download/loading or standalone inference is implemented.
-- The HTTPS endpoint integration has not been exercised against a real model server on an Android device. No running Ollama/LM Studio/llama server or device was found. Endpoint support for tools is required; unsupported protocol errors are surfaced.
-- Five JVM tests cover strict record round-tripping and rejection of malformed records. These do not validate Android filesystem persistence, UI, networking or model quality.
-- No emulator is installed in the selected SDK and `adb devices` returned no devices. Device navigation, imports, rotations, accessibility, screenshots, restart persistence and inference tests are still required.
-- Only labeled `.omd` text imports are supported. PDF, JSON, arbitrary files and GGUF imports are not supported. Retrieval is exact-token matching, not embeddings or model-weight training.
-- Knowledge editing, autosaved drafts, library export/backup, full chat history and external connector/action execution are unfinished. USB storage is deferred scope.
-- The unsigned release AAB requires an approved signing setup. No signing credentials were created or exposed and no app was published.
+Seven JVM tests cover record round-tripping/malformed records, archive sibling-path traversal and truncated archives. Engine script passes `bash -n`. Debug APK signature verifies. Refer to build/CI reports for current lint results.
 
-## Google Play gate
+No Android device/emulator was available. Provisioning, GGUF loading/inference/tool calls, UI, restart persistence, memory/thermal behavior and cancellation still require phone testing. Source/build verification is not an executed inference test. The user will test the APK.
 
-Official policy retrieved October 5, 2026 requires API 36 for new phone apps and updates from August 31, 2026. Check current build configuration against that requirement before submission: https://support.google.com/googleplay/android-developer/answer/11926878
+Supported imports are labeled `.omd` knowledge and GGUF weights. PDF, arbitrary JSON and embeddings are unsupported. GGUF header/size checks reject obvious bad files; actual loading checks architecture and memory compatibility. Library editing/autosaved drafts/export/full chat history, model deletion, MCP authentication and broader actions remain unfinished. USB is deferred.
 
-Native dependencies also need 16 KiB page-size compatibility verification: https://developer.android.com/guide/practices/page-sizes
+## Deferred release work
 
-Release signing / Play App Signing setup: https://developer.android.com/studio/publish/app-signing
+Development setup downloads native code; provisioning is disabled in release builds. The unsigned AAB is a packaging artifact, not a usable Play release. Bundled engine distribution, redistribution obligations and native 16 KiB compatibility need subsequent work. No release-signing credentials were created, agreements accepted or app published.
 
-Store listing, privacy policy, Data safety disclosures (including optional endpoint transmission), content rating, device/prelaunch testing and any account-specific testing requirements remain release gates. A successful build is not evidence of production readiness.
+References: [executable-code policy](https://support.google.com/googleplay/android-developer/answer/16559646), [API target policy](https://support.google.com/googleplay/android-developer/answer/11926878), [16 KiB compatibility](https://developer.android.com/guide/practices/page-sizes), [signing](https://developer.android.com/studio/publish/app-signing).

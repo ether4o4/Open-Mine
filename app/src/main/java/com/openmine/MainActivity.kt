@@ -80,9 +80,10 @@ class MainActivity:ComponentActivity(){
      10->DiagnosticsScreen(c)
      11->SettingsScreen(animations,{v->animations=v;p.edit().putBoolean("animations",v).apply()},haptics,{v->haptics=v;p.edit().putBoolean("haptics",v).apply()})
      12->AssistantScreen(c)
+     0,9->RuntimeScreen(c,screen==9)
      3->Knowledge(c)
      6->LibraryTools(c)
-     8,9->CapabilityScreen(NAV[screen].name,"No browser or terminal executor is installed. Your library remains available in Knowledge.")
+     8->CapabilityScreen(NAV[screen].name,"No browser executor is installed. Your library remains available in Knowledge.")
      else->Orbit(screen,animations,active,contextItems,::selectObject,::toggleContext)
     }}
    }
@@ -277,7 +278,7 @@ class MainActivity:ComponentActivity(){
  var busy by remember{mutableStateOf(false)}
  val scope=rememberCoroutineScope()
  LazyColumn(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Connect a real model server. Matching local records are sent to that endpoint as source context. Only library search can be executed. On-device GGUF loading is not installed.",color=DIM,fontSize=14.sp)}
+  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Start an imported GGUF in AI Models, then connect its on-device API. Matching library sources stay on your phone for loopback inference. HTTPS endpoints receive source context. Only library search can be executed by the model.",color=DIM,fontSize=14.sp);OutlinedButton({endpoint="http://127.0.0.1:8080/v1";model="local"},enabled=!busy){Text("Use on-device model")}}
   item{OutlinedTextField(endpoint,{endpoint=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("HTTPS API base URL")},singleLine=true)}
   item{OutlinedTextField(model,{model=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Server model ID")},singleLine=true)}
   item{OutlinedTextField(key,{key=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("API key (this session only)")},singleLine=true,visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())}
@@ -291,6 +292,36 @@ class MainActivity:ComponentActivity(){
   item{Text(status,color=CYAN,fontSize=14.sp)}
   item{androidx.compose.foundation.text.selection.SelectionContainer{Text(answer,color=MAIN,fontSize=16.sp,lineHeight=24.sp)}}
   items(sources){source->ObjectInspector(source)}
+ }
+}
+
+@Composable fun RuntimeScreen(c:Context,terminal:Boolean){
+ val runtime=remember{com.openmine.sandbox.OpenMineRuntime.get(c)}
+ val status by runtime.status.collectAsState()
+ val busy by runtime.busy.collectAsState()
+ val output by runtime.output.collectAsState()
+ val models by runtime.models.collectAsState()
+ var command by remember{mutableStateOf("")}
+ var confirm by remember{mutableStateOf(false)}
+ val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->if(uri!=null)runtime.importModel(uri)}
+ if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Run this command?")},text={Text("This command runs inside Open Mine's Linux environment with network access and access to its files.\n\n$command")},confirmButton={TextButton({confirm=false;runtime.command(command)}){Text("Run")}},dismissButton={TextButton({confirm=false}){Text("Cancel")}})
+ LazyColumn(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+  item{Text(if(terminal)"LINUX SHELL" else "ON-DEVICE GGUF",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Open Mine contains reused MVE Linux runtime code. Development setup downloads an Alpine environment and engine prerequisites; engine setup can take 10–30 minutes. No other app or computer is required. Keep Open Mine open during setup.",color=DIM,fontSize=14.sp)}
+  item{Text(status,color=CYAN,fontSize=14.sp);if(busy)LinearProgressIndicator(Modifier.fillMaxWidth())}
+  item{Button({runtime.setup()},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Set up Linux shell")}}
+  if(terminal){
+   item{OutlinedTextField(command,{command=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Shell command")})}
+   item{Button({confirm=true},enabled=!busy && runtime.ready && command.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Review and run command")}}
+  }else{
+   item{Button({runtime.engine("provision")},enabled=!busy && runtime.ready,modifier=Modifier.fillMaxWidth()){Text("Set up GGUF engine")}}
+   item{OutlinedButton({picker.launch(arrayOf("application/octet-stream","*/*"))},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Import GGUF weights")}}
+   if(models.isEmpty())item{Text("No model weights imported. Choose a small quantized GGUF that fits your phone's RAM. Model loading verifies compatibility; a valid file header alone does not.",color=DIM,fontSize=14.sp)}
+   items(models){model->Surface(color=PANEL,shape=RoundedCornerShape(12.dp)){Column(Modifier.padding(12.dp)){Text(model,color=MAIN,fontSize=12.sp);Button({runtime.engine("serve",model)},enabled=!busy && runtime.ready){Text("Load and start model")}}}}
+   item{OutlinedButton({runtime.engine("status")},enabled=!busy && runtime.ready){Text("Check engine status")}}
+   item{OutlinedButton({runtime.engine("stop")},enabled=!busy && runtime.ready){Text("Stop model")}}
+  }
+  if(busy)item{OutlinedButton({runtime.cancel()}){Text("Cancel operation")}}
+  item{androidx.compose.foundation.text.selection.SelectionContainer{Text(output,color=MAIN,fontSize=12.sp)}}
  }
 }
 @Composable fun Setting(t:String,s:String,v:Boolean,on:(Boolean)->Unit){Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),color=PANEL,shape=RoundedCornerShape(12.dp)){Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(t,color=MAIN,fontSize=12.sp);Text(s,color=DIM,fontSize=12.sp)};Switch(v,on)}}}

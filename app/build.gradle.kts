@@ -5,9 +5,10 @@ plugins {
 }
 android {
     namespace = "com.openmine"
-    compileSdk = 35
-    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "1.0.0" }
-    buildFeatures { compose = true }
+    compileSdk = 36
+    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 2; versionName = "0.2.0-dev" }
+    buildFeatures { compose = true; buildConfig = true }
+    packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
