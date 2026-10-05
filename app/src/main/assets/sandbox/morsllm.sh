@@ -167,6 +167,10 @@ cmd_provision() {
         provision_emitted=1
         return 0
     fi
+    if [ -e "$LLAMA_SERVER" ]; then
+        log "provision: existing binary fails execution check; preserving as .failed"
+        mv -f "$LLAMA_SERVER" "$LLAMA_SERVER.failed"
+    fi
     if [ "$(uname -m)" = "aarch64" ] && [ ! -x "$LLAMA_SERVER" ]; then
         prebuilt_url="https://github.com/ether4o4/NeverSoft-Services-OS/releases/download/llama-server-prebuilt-latest/llama-server-aarch64-musl"
         mkdir -p "$BIN_DIR"

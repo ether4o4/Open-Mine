@@ -168,7 +168,15 @@ class MainActivity:ComponentActivity(){
 @Composable fun ContextPanel(screen:Int,current:Orb?,contextItems:Set<String>,onToggleContext:(Orb)->Unit){
  var inspect by remember(current?.id){mutableStateOf(false)}
  var tab by remember(current?.id){mutableIntStateOf(0)}
+ var toolReview by remember(current?.id){mutableStateOf<String?>(null)}
+ var actionError by remember(current?.id){mutableStateOf("")}
+ val actionContext=LocalContext.current
+ val runtime=remember{com.openmine.sandbox.OpenMineRuntime.get(actionContext)}
+ val toolBusy by runtime.busy.collectAsState()
+ val toolOutput by runtime.terminalOutput.collectAsState()
+ val toolStatus by runtime.status.collectAsState()
  val record=current?.record
+ toolReview?.let{command->AlertDialog(onDismissRequest={toolReview=null},title={Text("Run ${current?.title}?")},text={Column(Modifier.verticalScroll(rememberScrollState())){Text("Runs for up to 30 seconds in your Linux environment, with network access and access to its files. Review the complete command:");Text(command)}},confirmButton={TextButton({toolReview=null;runtime.command(command)}){Text("RUN COMMAND")}},dismissButton={TextButton({toolReview=null}){Text("CANCEL")}})}
  if(inspect && record!=null)AlertDialog(onDismissRequest={inspect=false},confirmButton={TextButton({inspect=false}){Text("Close")}},title={Text(current.title)},text={Column(Modifier.verticalScroll(rememberScrollState())){ObjectInspector(record)}})
  Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(PANEL).padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
   Text(current?.title.orEmpty(),color=MAIN,fontSize=20.sp,fontWeight=FontWeight.Bold)
@@ -183,8 +191,16 @@ class MainActivity:ComponentActivity(){
   }
   Text(content?.takeUnless{it=="NONE" || it.isBlank()} ?: "No ${listOf("overview","context facts","tool procedure","related records")[tab]} recorded.",color=DIM,fontSize=14.sp)
   Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-   Button({current?.let{onToggleContext(it)}},Modifier.weight(1f).heightIn(min=48.dp)){Text(if(current?.id in contextItems)"Remove context" else "Add to Context",fontSize=13.sp)}
+   Button({current?.let{onToggleContext(it)}},Modifier.weight(1f).heightIn(min=48.dp)){Text(if(current?.id in contextItems)if(record?.type=="SKILL")"Deactivate Skill" else "Remove context" else if(record?.type=="SKILL")"Activate Skill" else "Add to Context",fontSize=13.sp)}
    OutlinedIconButton({inspect=true},Modifier.size(48.dp)){Icon(Icons.Default.Description,"Inspect labeled record")}
+  }
+  if(record?.type=="TOOL"){
+   OutlinedButton({runCatching{RecordActions.toolCommand(record)}.onSuccess{toolReview=it;actionError=""}.onFailure{actionError=it.message.orEmpty()}},enabled=!toolBusy && runtime.ready,modifier=Modifier.fillMaxWidth()){Text("REVIEW + RUN TOOL")}
+   if(!runtime.ready)Text("Set up Linux in Terminal before running a tool.",color=DIM,fontSize=12.sp)
+   if(actionError.isNotBlank())Text(actionError,color=Color(0xFFFF6B6B))
+   Text(toolStatus,color=CYAN,fontSize=12.sp)
+   if(toolBusy)OutlinedButton({runtime.cancel()}){Text("Cancel running operation")}
+   androidx.compose.foundation.text.selection.SelectionContainer{Text(toolOutput.takeLast(6000),color=DIM,fontSize=12.sp)}
   }
  }
 }
@@ -331,7 +347,7 @@ class MainActivity:ComponentActivity(){
  var busy by remember{mutableStateOf(false)}
  val scope=rememberCoroutineScope()
  LazyColumn(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Start an imported GGUF in AI Models, then connect its on-device API. Matching library sources stay on your phone for loopback inference. HTTPS endpoints receive source context. Only library search can be executed by the model.",color=DIM,fontSize=14.sp);OutlinedButton({endpoint="http://127.0.0.1:8080/v1";model="local"},enabled=!busy){Text("Use on-device model")}}
+  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Start an imported GGUF in AI Models, then connect its on-device API. Matching library sources stay on your phone for loopback inference. HTTPS endpoints receive source context. Activated skills are sent as workflow context. The model can search the library and read fixed system information; custom tools run only after your review in Tools.",color=DIM,fontSize=14.sp);OutlinedButton({endpoint="http://127.0.0.1:8080/v1";model="local"},enabled=!busy){Text("Use on-device model")}}
   item{OutlinedTextField(endpoint,{endpoint=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("HTTPS API base URL")},singleLine=true)}
   item{OutlinedTextField(model,{model=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Server model ID")},singleLine=true)}
   item{OutlinedTextField(key,{key=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("API key (this session only)")},singleLine=true,visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())}

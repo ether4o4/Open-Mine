@@ -99,12 +99,12 @@ class OpenMineRuntime private constructor(private val context:Context) {
         val json=tail.lines().lastOrNull{it.trim().startsWith("{")}.orEmpty()
         val parsed=runCatching{JSONObject(json)}.getOrNull()
         if(exit!=0 || parsed?.optBoolean("ok")!=true){
-            val logPath=parsed?.optString("log_path").orEmpty()
+            val logPath=parsed?.optString("log_path").orEmpty().ifBlank{parsed?.optString("log").orEmpty()}
             val prefix="/root/.morsvitaest/llm/"
             if(logPath.startsWith(prefix)){
                 val log=File(home,logPath.removePrefix("/root/"))
                 if(log.canonicalPath.startsWith(File(home,".morsvitaest/llm").canonicalPath+File.separator) && log.isFile){
-                    output.value=(tail+"\nBUILD LOG:\n"+log.readText().takeLast(12000)).takeLast(32000)
+                    output.value=(tail+"\nBUILD LOG:\n"+java.io.RandomAccessFile(log,"r").use{file->val size=minOf(file.length(),12000L).toInt();file.seek(file.length()-size);val bytes=ByteArray(size);file.readFully(bytes);String(bytes,Charsets.UTF_8)}).takeLast(32000)
                 }
             }
             error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: ${parsed?.optString("detail").orEmpty()}. See retained output.")
