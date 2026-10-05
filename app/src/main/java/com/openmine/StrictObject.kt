@@ -7,6 +7,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import android.util.AtomicFile
 
 data class StrictObject(val fields: Map<String,String>, val sections: Map<String,Map<String,String>>, val raw: String) {
     val id get() = fields["OBJECT_ID"].orEmpty()
@@ -49,6 +51,25 @@ object OpenMineObjectFormat {
     fun validate(raw:String):ValidationResult {
         val o = parse(raw)
         val e = mutableListOf<String>()
+        var section = ""
+        var ended = false
+        val seenSections = mutableSetOf<String>()
+        val seenLabels = mutableSetOf<String>()
+        raw.replace("\r", "").lines().forEachIndexed { index, original ->
+            val line = original.trim()
+            if (line.isBlank()) return@forEachIndexed
+            if (ended) { e.add("Content after END_OBJECT at line ${index + 1}."); return@forEachIndexed }
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length - 1)
+                if (section == "END_OBJECT") ended = true
+                else if (section !in schema || !seenSections.add(section)) e.add("Unknown or duplicate section at line ${index + 1}.")
+            } else {
+                val colon = line.indexOf(':')
+                val label = if (colon > 0) line.substring(0, colon).trim() else ""
+                if (label !in schema[section].orEmpty() || !seenLabels.add("$section.$label"))
+                    e.add("Unknown, duplicate or unlabeled content at line ${index + 1}.")
+            }
+        }
         schema.forEach { pair ->
             if (!o.sections.containsKey(pair.key)) e.add("Missing [" + pair.key + "] section.")
             pair.value.forEach { label ->
@@ -63,8 +84,14 @@ object OpenMineObjectFormat {
         if (!Regex("^[a-z0-9][a-z0-9._-]{2,100}$").matches(id)) e.add("OBJECT_ID format is invalid.")
         if (o.type !in types) e.add("OBJECT_TYPE is invalid.")
         if (o.status !in statuses) e.add("OBJECT_STATUS is invalid.")
+        if (o.title == "NONE") e.add("OBJECT_TITLE needs a meaningful value.")
         val vs = o.sections["VERIFICATION"]?.get("VERIFICATION_STATUS").orEmpty()
         if (vs !in statuses) e.add("VERIFICATION_STATUS is invalid.")
+        val priority = o.sections["CONTEXT_INDEX"]?.get("INDEX_PRIORITY")?.toIntOrNull()
+        if (priority == null || priority !in 0..100) e.add("INDEX_PRIORITY must be 0–100.")
+        listOf("OBJECT_CREATED", "OBJECT_UPDATED").forEach { label ->
+            if (runCatching { java.time.Instant.parse(o.fields[label]) }.isFailure) e.add("$label must be an ISO UTC timestamp.")
+        }
         return if (e.isEmpty()) ValidationResult(true,emptyList(),normalize(o)) else ValidationResult(false,e)
     }
 
@@ -88,7 +115,7 @@ object OpenMineObjectFormat {
     fun canonicalList(v:String):String = if (v.equals("NONE",true)) "NONE" else
         v.split(",").map{it.trim().lowercase(Locale.US)}.filter{it.isNotBlank()}.distinct().sorted().joinToString(", ")
 
-    fun now():String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).format(Date())
+    fun now():String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
 
     fun template(type:String,title:String,summary:String,tags:String,source:String,purpose:String,facts:String,procedure:String,constraints:String,examples:String,keywords:String,aliases:String,triggers:String,project:String,model:String,skill:String,tool:String,mission:String,query:String,whenText:String,exclude:String,verification:String,verificationSource:String,notes:String):StrictObject {
         val slug=title.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"),"-").trim('-').ifBlank{"object"}
@@ -102,7 +129,8 @@ object OpenMineObjectFormat {
             "RETRIEVAL" to linkedMapOf("RETRIEVAL_QUERY" to query,"RETRIEVAL_WHEN" to whenText,"RETRIEVAL_EXCLUDE" to exclude),
             "VERIFICATION" to linkedMapOf("VERIFICATION_STATUS" to verification,"VERIFICATION_SOURCE" to verificationSource,"VERIFICATION_NOTES" to notes)
         )
-        return normalize(StrictObject(s["OPEN_MINE_OBJECT"].orEmpty(),s,""))
+        val safe = s.mapValues { (_, fields) -> fields.mapValues { (_, value) -> value.replace(Regex("[\\r\\n]+"), " ").ifBlank { "NONE" } } }
+        return normalize(StrictObject(safe["OPEN_MINE_OBJECT"].orEmpty(),safe,""))
     }
 }
 
@@ -119,9 +147,40 @@ object OpenMineObjectStore {
         val r=OpenMineObjectFormat.validate(raw)
         if(!r.valid)return r
         val o=r.normalized!!
-        File(dir(c),o.id+".omd").writeText(o.raw)
-        rebuildIndex(c)
+        val target = File(dir(c),o.id+".omd")
+        if (target.exists()) return ValidationResult(false,listOf("Object ID already exists: ${o.id}. Use a unique title or ID; existing knowledge was preserved."))
+        try {
+            atomicWrite(target, o.raw)
+            rebuildIndex(c)
+        } catch (error: Exception) {
+            target.delete()
+            return ValidationResult(false,listOf("Could not save and index object: ${error.message}"))
+        }
         return r
+    }
+
+    fun update(c:Context,id:String,raw:String):ValidationResult {
+        val result=OpenMineObjectFormat.validate(raw)
+        if(!result.valid)return result
+        if(result.normalized!!.id!=id)return ValidationResult(false,listOf("Editing cannot change the object ID"))
+        val target=File(dir(c),id+".omd")
+        if(!target.isFile)return ValidationResult(false,listOf("Object no longer exists"))
+        val previous=target.readText()
+        return try{atomicWrite(target,result.normalized.raw);rebuildIndex(c);result}
+        catch(e:Exception){atomicWrite(target,previous);ValidationResult(false,listOf("Update failed: ${e.message}"))}
+    }
+    fun delete(c:Context,o:StrictObject){
+        val target=File(dir(c),o.id+".omd")
+        val previous=target.readText()
+        check(target.delete()){"Could not delete object"}
+        try{rebuildIndex(c)}catch(e:Exception){atomicWrite(target,previous);throw e}
+    }
+
+    private fun atomicWrite(file:File, value:String) {
+        val atomic = AtomicFile(file)
+        val stream = atomic.startWrite()
+        try { stream.write(value.toByteArray(Charsets.UTF_8)); atomic.finishWrite(stream) }
+        catch (error:Exception) { atomic.failWrite(stream); throw error }
     }
 
     fun create(c:Context,o:StrictObject)=import(c,o.raw)
@@ -141,14 +200,15 @@ object OpenMineObjectStore {
             }}
             root.put(o.id,JSONObject().put("OBJECT_ID",o.id).put("OBJECT_TYPE",o.type).put("OBJECT_TITLE",o.title).put("OBJECT_STATUS",o.status).put("TERMS",JSONArray(terms.toList())).put("CHUNKS",chunks))
         }
-        File(c.filesDir,INDEX).writeText(root.toString(2))
+        atomicWrite(File(c.filesDir,INDEX),root.toString(2))
     }
 
     fun search(c:Context,q:String):List<StrictObject> {
         val terms=tokenize(q)
         return all(c).map{o ->
             val text=o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" ")
-            o to terms.count{tokenize(text).contains(it)}
+            val indexedTerms=tokenize(text)
+            o to terms.count{it in indexedTerms}
         }.filter{it.second>0}.sortedByDescending{it.second}.map{it.first}
     }
 

@@ -3,6 +3,7 @@ name: Build Open Mine APK
 on:
   push:
     branches: [ main ]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -26,25 +27,29 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses >/dev/null || true
+      - name: Locate installed Android SDK tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
       - name: Install Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: '"$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;35.0.0"'
 
       - name: Make Gradle executable
         run: chmod +x gradlew
 
       - name: Compile checks
-        run: ./gradlew --no-daemon :app:compileDebugKotlin
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :app:bundleRelease
 
       - name: Verify APK
         run: |
           test -s app/build/outputs/apk/debug/app-debug.apk
           ls -lh app/build/outputs/apk/debug/app-debug.apk
+          python3 scripts/verify_packaged_shell.py app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -53,3 +58,10 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Upload unsigned bundle and verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-bundle-and-reports
+          path: |
+            app/build/outputs/bundle/release/app-release.aab
+            app/build/reports/

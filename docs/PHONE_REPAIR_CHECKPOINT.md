@@ -1,0 +1,46 @@
+# Phone feedback repair checkpoint
+
+Confirmed code defect: terminal used a fresh PRoot process per command. It now uses the existing MVE persistent Bash session implementation. `cd` and `export` survive subsequent commands/navigation while the process remains alive; working directory and bounded terminal history are saved across app restart. Exported environment variables are not restored after Android kills the process. Files and installed packages remain in app storage.
+
+Skills and Tools now open type-filtered record management with Create, Import, validated canonical Edit and confirmed Delete. They store real labeled records; custom command execution or automatic model invocation of user tools is not implemented by this checkpoint.
+
+GGUF repair: refresh bundled script for existing installations; retain stdout/stderr and referenced build-log tail; surface structured error/detail; skip prerequisites when an existing binary passes --version; attempt ARM64 prebuilt only on ARM64. The prior phone screenshot's extracted text contains only the generic failure, so actual compiler/network/device cause is still unknown. These changes do not establish successful native inference.
+
+HUD visual changes await the user's corrected reference images. Original feedback Library reads provided OCR/captions, but image pixels were not locally materialized: two supported prepare calls returned signed transfers only. Windows transfer helper metadata support was unavailable (os.setxattr); no alternate download workaround used. No visual QA claim.
+
+Phone checks: run `mkdir -p /root/test && cd /root/test && export OPENMINE_TEST=works`; next run `pwd; echo "$OPENMINE_TEST"`; switch tabs and repeat; restart app and check cwd/history (environment starts fresh). Create/edit/import/delete SKILL and TOOL records; verify Knowledge sees them. Retry GGUF setup and supply retained error/log output if it fails. Load a compatible GGUF, start model, use on-device endpoint in AI Chat and confirm generated response. No device/emulator attached on build computer.
+
+## Reference-guided workspace restoration
+Parent visually inspected the three authoritative JPEGs through supported Library materialization and supplied composition observations. This host could not view pixels due to its Windows transfer-helper incompatibility. Layout restored from those verified observations: left navigation, concentric radial hub/petals, selected-item lower detail panel with functional Overview/Context/Tools/Related content tabs, context action and compact bottom carousel. Model runtime and Skills/Tools/Knowledge management are accessible from these workspaces. Six-card groups avoid the original nine-card overlap; carousel selects further groups. Safe system insets retained, compact header labels, responsive hub height. No dummy reference objects were added. Rendering/reference comparison and phone verification are still required; this is not pixel-level QA.
+
+## Explicit skill/tool actions
+Tool records now expose Review + Run from their selected workspace detail. CONTENT_PROCEDURE is a shell command (use explicit shell separators for multiple steps). Only TOOL records with nonempty commands <=8192 characters and no unsupported control characters qualify. Nothing runs on import or selection. The confirmation shows the entire command and explains Linux file/network access. Explicit execution reuses the persistent runtime with a 30-second command timeout, bounded output, status and cancellation. This is user-reviewed shell execution, not a security sandbox for hostile commands. The model cannot invoke custom commands automatically.
+
+Activate Skill persists the selected record ID, and AI Chat includes up to eight explicitly selected SKILL workflows as instruction context plus selected reference records. Deactivate removes it from subsequent requests. Server-side model compliance is not guaranteed; transmission/selection is implemented.
+
+GGUF inspected defects: server failure reports use `log` as well as provisioning `log_path`; both now load a bounded 12KB log tail. An existing binary failing --version is preserved as .failed rather than passing a later executable-file-only already-built branch. An isolated existing-engine fast-path test passed without installing prerequisites. Phone failure root cause remains unconfirmed.
+
+Validation: nine JVM tests, APK build and lint pass locally; Bash syntax and existing-engine fast-path test pass. CI for 15153e155f9a304c83f01293c36b44dda712393d passed. No connected emulator/device; Compose rendered screenshots remain unavailable on this host.
+
+## Confirmed CRLF startup fix (0.2.1-dev / versionCode 3)
+The phone's `$\r: command not found`, invalid `set` options, and `$'{\r'` syntax error identify CRLF bytes in deployed morsllm.sh. HP4g source inspection confirmed 733 CRLF sequences. Source now uses LF; .gitattributes forces shell assets/wrapper LF on checkout. A Gradle asset gate blocks CR/BOM scripts before asset merging, and CI extracts the actual APK asset and runs Bash syntax validation.
+
+Runtime setup and every engine action now use ShellScriptInstaller: strict UTF-8, <=1MiB, strip only a leading UTF-8 BOM, convert CRLF to LF, reject isolated CR/NUL/missing shebang, validate before touching the existing script, then stage/replace only home/morsllm.sh. Retrying GGUF setup automatically refreshes the old deployed runner. Rootfs, models and library are not removed. Do not clear app storage/uninstall to apply this fix.
+
+Tests include full real-runner CRLF+BOM normalization, malformed/binary/oversized rejection, and migration fixtures verifying model/rootfs/library bytes plus preservation of the deployed script on invalid input. Actual APK asset is 32838 bytes, no CR/BOM, and passes Bash -n. Packaging gate rejects a deliberately contaminated asset. The older source-only syntax check missed the bytes packaged on Windows; the artifact check now tests the deployed payload. Further provisioning/model-load issues remain possible; no native inference success claimed.
+
+## Ollama connection usability repair (0.2.2-dev / versionCode 4)
+User supplied the rejected value `http://127,0,0,1:11434/v1`; commas are the confirmed immediate cause. Previous validator already allowed correct localhost/127.0.0.1 HTTP on arbitrary valid ports, and Android cleartext policy permits those exact hosts. No port-allowlist defect was found.
+
+ModelEndpoint now gives a specific comma-versus-dot error, canonicalizes scheme/host casing, checks credentials/query/fragment/port/path, and assembles exactly /v1/chat/completions. It never silently rewrites comma hosts or permits remote HTTP. Exact localhost and 127.0.0.1 are allowed; lookalike hosts, other IPs and malformed URLs are rejected. Local empty base path becomes /v1; /api/chat and full completion endpoint inputs are rejected with base-URL guidance. HTTPS gateway prefixes remain supported.
+
+AI Chat has separate Built-in GGUF (8080) and Termux Ollama (11434) presets. Presets set an exact base URL and clear the session API key; they preserve the user's model ID. Helpful labels specify the built-in alias local versus an exact Ollama installed tag. Entered URL/model persist when attempting a request, including failure, so navigation does not reset user entries.
+
+For this phone: choose Termux Ollama; model qwen2.5:3b; API key blank. This sends POST http://127.0.0.1:11434/v1/chat/completions. Termux's confirmed /api/chat response does not by itself verify this app's OpenAI-compatible request. Phone retest remains required.
+
+## Streaming and latency feedback
+Official Ollama OpenAI compatibility docs list both streaming and tools for /v1/chat/completions: https://docs.ollama.com/api/openai-compatibility . Requests now ask for SSE streaming while preserving search_library/linux_system_info and two tool rounds (three model requests maximum). Text chunks appear before completion; fragmented function names/arguments are reassembled. JSON-buffered server responses remain supported. Incomplete streams fail rather than treating partial text as completed.
+
+UI phases show local retrieval, server/first-token wait, streamed generation and read-only tool calls, with elapsed seconds, cancellation, duplicate-submit lockout, and cleanup on navigation. Cold startup happens in Ollama: reported 35s cold load and ~11.44 tokens/s generation explain substantial waiting; no inference speed improvement is claimed. Output cap is 256 tokens per round (was 512), with a visible limit-reached message. A 180-second total request budget disconnects active HTTP; per-connect timeout 15s, read-idle timeout 60s. Cancellation cannot force the remote/Termux server to unload or stop generation after disconnect.
+
+Library search now tokenizes each record once instead of once per query term, preserving matches. Context caps and core tools are retained. Tests cover exact /v1 URL, malformed comma hosts, cleartext policy, SSE LF/CRLF and truncation, fragmented tool calls, cancellation/budget, and loopback HTTP chunk delivery before stream completion with one submission. Actual Ollama response/performance and Android cancellation still need phone verification.
