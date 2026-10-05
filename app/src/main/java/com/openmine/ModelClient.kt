@@ -3,15 +3,15 @@ package com.openmine
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
 import java.net.HttpURLConnection
 
 /** Real HTTPS inference, with only one bounded, read-only tool. Never runs model-provided commands. */
 object ModelClient {
-    data class Reply(val text:String,val sources:List<StrictObject>,val toolResults:List<String>)
-    fun ask(c:Context,endpoint:String,model:String,key:String,question:String):Reply {
-        val uri=URI(endpoint.trim().trimEnd('/')+"/chat/completions")
-        require((uri.scheme=="https" || (uri.scheme=="http" && uri.host in setOf("127.0.0.1","localhost"))) && !uri.host.isNullOrBlank() && uri.userInfo==null && uri.query==null && uri.fragment==null){"Use HTTPS or the on-device loopback API URL."}
+    data class Reply(val text:String,val sources:List<StrictObject>,val toolResults:List<String>,val tokenLimited:Boolean=false)
+    fun ask(c:Context,endpoint:String,model:String,key:String,question:String,control:ModelRequestControl=ModelRequestControl(),onProgress:(String)->Unit={},onText:(String)->Unit={}):Reply {
+      try{
+        control.checkActive();onProgress("Retrieving local sources")
+        val uri=ModelEndpoint.chatUri(endpoint)
         require(model.isNotBlank()){"Enter the server's actual model ID."}
         val selected=c.getSharedPreferences("open_mine",Context.MODE_PRIVATE).getStringSet("context",emptySet()).orEmpty()
         val records=OpenMineObjectStore.all(c)
@@ -27,34 +27,47 @@ object ModelClient {
             .put("parameters",JSONObject().put("type","object").put("properties",JSONObject().put("query",JSONObject().put("type","string"))).put("required",JSONArray().put("query"))))
         val systemTool=JSONObject().put("type","function").put("function",JSONObject().put("name","linux_system_info").put("description","Run the fixed read-only uname command in Open Mine's Linux shell. No arbitrary command arguments are accepted.").put("parameters",JSONObject().put("type","object").put("properties",JSONObject())))
         repeat(3){round->
-            val payload=JSONObject().put("model",model.trim()).put("messages",messages).put("stream",false).put("max_tokens",512)
+            control.checkActive();onProgress("Connecting to model · round ${round+1}/3");onText("")
+            val payload=JSONObject().put("model",model.trim()).put("messages",messages).put("stream",true).put("max_tokens",256)
             if(round<2)payload.put("tools",JSONArray().put(tool).put(systemTool))
             val connection=uri.toURL().openConnection() as HttpURLConnection
-            val response=try {
-                connection.requestMethod="POST";connection.connectTimeout=15000;connection.readTimeout=90000
+            control.attach(connection)
+            val answer=try {
+                connection.requestMethod="POST";connection.connectTimeout=15000;connection.readTimeout=60000
                 connection.instanceFollowRedirects=false;connection.doOutput=true
                 connection.setRequestProperty("Content-Type","application/json")
                 if(key.isNotBlank())connection.setRequestProperty("Authorization","Bearer $key")
                 connection.outputStream.use{it.write(payload.toString().toByteArray(Charsets.UTF_8))}
+                onProgress("Waiting for server / first token · cold model loading can take tens of seconds")
                 val status=connection.responseCode
-                check(status in 200..299){"Model server returned HTTP $status. Check URL, model ID and authentication."}
-                connection.inputStream.bufferedReader().use{reader->
-                    val buffer=CharArray(4096);val output=StringBuilder()
-                    while(true){val count=reader.read(buffer);if(count<0)break;output.append(buffer,0,count);check(output.length<=1024*1024){"Model response exceeds limit."}}
-                    JSONObject(output.toString())
+                if(status !in 200..299){
+                    val detail=connection.errorStream?.bufferedReader()?.use{reader->val chars=CharArray(2048);val n=reader.read(chars);if(n>0)String(chars,0,n)else ""}.orEmpty()
+                    error("Model server HTTP $status: ${detail.take(1200)}. Check the installed model ID and compatible /v1 API.")
+                }
+                if(connection.contentType.orEmpty().contains("text/event-stream",ignoreCase=true)){
+                    connection.inputStream.bufferedReader().use{reader->ChatStream.read(reader,{control.checkActive()}){text->onProgress("Receiving model response · round ${round+1}/3");onText(text)}}
+                }else{
+                    onProgress("Server returned a buffered response; waiting for completion")
+                    connection.inputStream.bufferedReader().use{reader->
+                        val buffer=CharArray(4096);val output=StringBuilder()
+                        while(true){control.checkActive();val count=reader.read(buffer);if(count<0)break;output.append(buffer,0,count);check(output.length<=1024*1024){"Model response exceeds limit."}}
+                        val choice=JSONObject(output.toString()).getJSONArray("choices").getJSONObject(0)
+                        choice.getJSONObject("message").put("_finish_reason",choice.optString("finish_reason"))
+                    }
                 }
             } finally {connection.disconnect()}
-            val answer=response.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
             val calls=answer.optJSONArray("tool_calls")
             if(calls==null || calls.length()==0){
                 val content=answer.optString("content").trim()
                 check(content.isNotBlank() && content!="null"){"Model returned no answer."}
-                return Reply(content,sources.distinctBy{it.id},results)
+                onText(content)
+                return Reply(content,sources.distinctBy{it.id},results,answer.optString("_finish_reason")=="length")
             }
             check(round<2 && calls.length()<=3){"Model exceeded the bounded tool-call limit."}
-            messages.put(answer)
+            answer.remove("_finish_reason");messages.put(answer)
             for(i in 0 until calls.length()){
                 val call=calls.getJSONObject(i);val function=call.getJSONObject("function")
+                control.checkActive();onProgress("Running read-only ${function.getString("name")} · tool round ${round+1}/2")
                 val toolResult=when(function.getString("name")){
                     "search_library"->{
                         val query=JSONObject(function.getString("arguments")).getString("query").take(512)
@@ -72,5 +85,6 @@ object ModelClient {
             }
         }
         error("Model did not finish within the tool-call limit.")
+      }finally{control.close()}
     }
 }

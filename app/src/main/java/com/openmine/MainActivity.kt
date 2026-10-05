@@ -346,18 +346,36 @@ class MainActivity:ComponentActivity(){
  var sources by remember{mutableStateOf(emptyList<StrictObject>())}
  var busy by remember{mutableStateOf(false)}
  val scope=rememberCoroutineScope()
+ var requestControl by remember{mutableStateOf<ModelRequestControl?>(null)}
+ var requestJob by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
+ var elapsed by remember{mutableIntStateOf(0)}
+ LaunchedEffect(busy){if(busy)while(true){kotlinx.coroutines.delay(1000);elapsed++}}
+ DisposableEffect(Unit){onDispose{requestControl?.cancelRequest();requestJob?.cancel()}}
  LazyColumn(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Start an imported GGUF in AI Models, then connect its on-device API. Matching library sources stay on your phone for loopback inference. HTTPS endpoints receive source context. Activated skills are sent as workflow context. The model can search the library and read fixed system information; custom tools run only after your review in Tools.",color=DIM,fontSize=14.sp);OutlinedButton({endpoint="http://127.0.0.1:8080/v1";model="local"},enabled=!busy){Text("Use on-device model")}}
-  item{OutlinedTextField(endpoint,{endpoint=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("HTTPS API base URL")},singleLine=true)}
-  item{OutlinedTextField(model,{model=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Server model ID")},singleLine=true)}
+  item{Text("AI IN YOUR LIBRARY",color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold);Text("Connect a running built-in GGUF, Termux Ollama, or HTTPS OpenAI-compatible server. HTTPS servers receive selected source context. Activated skills guide the response. The model can search your library and read fixed system information; custom commands require review in Tools.",color=DIM,fontSize=14.sp);Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
+   OutlinedButton({endpoint=ModelEndpoint.BUILT_IN;key="";status="Built-in engine: port 8080. Its model alias is local; your model field was preserved.";prefs.edit().putString("endpoint",endpoint).apply()},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Built-in GGUF · 8080")}
+   OutlinedButton({endpoint=ModelEndpoint.OLLAMA;key="";status="Termux Ollama: port 11434. Enter the installed model name from ollama list; no API key is needed. Your model field was preserved.";prefs.edit().putString("endpoint",endpoint).apply()},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Termux Ollama · 11434")}
+   Text("Presets preserve your model ID. Local servers need no API key. Built-in ID: local. Ollama ID: your installed tag, such as qwen2.5:3b.",color=DIM,fontSize=12.sp)
+  }}
+  item{OutlinedTextField(endpoint,{endpoint=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("API base URL")},supportingText={Text("HTTPS or phone loopback · Ollama 11434 / built-in 8080 · use /v1")},keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Uri,autoCorrectEnabled=false),singleLine=true)}
+  item{OutlinedTextField(model,{model=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Installed server model ID")},supportingText={Text("Ollama: exact installed tag · Built-in: local")},singleLine=true)}
   item{OutlinedTextField(key,{key=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("API key (this session only)")},singleLine=true,visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())}
   item{OutlinedTextField(question,{question=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Ask your library")})}
-  item{Button({busy=true;answer="";sources=emptyList();status="Retrieving sources and contacting model serverâ€¦";scope.launch{
-   val result=withContext(Dispatchers.IO){runCatching{ModelClient.ask(c,endpoint,model,key,question)}}
-   result.onSuccess{reply->answer=reply.text;sources=reply.sources;status=if(reply.toolResults.isEmpty())"Model answered with ${sources.size} retrieved source records." else reply.toolResults.joinToString("\n");prefs.edit().putString("endpoint",endpoint).putString("model",model).putString("last_answer",answer).apply()}
-    .onFailure{status="Request failed: ${it.message ?: "Connection or response error"}. No external actions ran."}
-   busy=false
-  }},enabled=!busy && question.isNotBlank() && endpoint.isNotBlank() && model.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text(if(busy)"Workingâ€¦" else "Ask model with library context")}}
+  item{Button({
+   val control=ModelRequestControl();requestControl=control;busy=true;elapsed=0;answer="";sources=emptyList();status="Retrieving sources"
+   prefs.edit().putString("endpoint",endpoint).putString("model",model).apply()
+   requestJob=scope.launch{
+    try{
+     val result=withContext(Dispatchers.IO){runCatching{ModelClient.ask(c,endpoint,model,key,question,control,
+      {phase->scope.launch{if(requestControl===control && busy && control.reason==null)status=phase}},
+      {partial->scope.launch{if(requestControl===control && busy && control.reason==null)answer=partial}})}}
+     result.onSuccess{reply->answer=reply.text;sources=reply.sources;status="Completed in ${elapsed}s · ${sources.size} source records"+(if(reply.tokenLimited)" · 256-token answer limit reached" else "")+(if(reply.toolResults.isNotEmpty())"\n"+reply.toolResults.joinToString("\n") else "");prefs.edit().putString("last_answer",answer).apply()}
+      .onFailure{status="Request failed: ${control.reason ?: it.message ?: "Connection or response error"}. Partial text is not a completed answer."}
+    }catch(_:kotlinx.coroutines.CancellationException){status="Cancelled. Partial text is not a completed answer."}
+    finally{control.close();busy=false;requestControl=null;requestJob=null}
+   }
+  },enabled=!busy && question.isNotBlank() && endpoint.isNotBlank() && model.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text(if(busy)"Request in progress" else "Ask model with library context")}}
+  if(busy)item{LinearProgressIndicator(Modifier.fillMaxWidth());Text("${elapsed}s elapsed · cold loading occurs on the server · 180s total budget",color=DIM,fontSize=12.sp);OutlinedButton({requestControl?.cancelRequest();requestJob?.cancel()}){Text("Cancel request")}}
   item{Text(status,color=CYAN,fontSize=14.sp)}
   item{androidx.compose.foundation.text.selection.SelectionContainer{Text(answer,color=MAIN,fontSize=16.sp,lineHeight=24.sp)}}
   items(sources){source->ObjectInspector(source)}

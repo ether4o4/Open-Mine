@@ -207,7 +207,8 @@ object OpenMineObjectStore {
         val terms=tokenize(q)
         return all(c).map{o ->
             val text=o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" ")
-            o to terms.count{tokenize(text).contains(it)}
+            val indexedTerms=tokenize(text)
+            o to terms.count{it in indexedTerms}
         }.filter{it.second>0}.sortedByDescending{it.second}.map{it.first}
     }
 

@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "com.openmine"
     compileSdk = 36
-    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 3; versionName = "0.2.1-dev" }
+    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.2.2-dev" }
     buildFeatures { compose = true; buildConfig = true }
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
@@ -25,6 +25,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 kotlin {
