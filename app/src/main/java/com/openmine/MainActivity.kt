@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,10 +81,8 @@ class MainActivity:ComponentActivity(){
      10->DiagnosticsScreen(c)
      11->SettingsScreen(animations,{v->animations=v;p.edit().putBoolean("animations",v).apply()},haptics,{v->haptics=v;p.edit().putBoolean("haptics",v).apply()})
      12->AssistantScreen(c)
-     0,9->RuntimeScreen(c,screen==9)
-     3->Knowledge(c)
-     4->Knowledge(c,"SKILL")
-     6->Knowledge(c,"TOOL")
+     9->RuntimeScreen(c,true)
+     0,1,2,3,4,5,6,7->WorkspaceScreen(screen,animations,active,contextItems,::selectObject,::toggleContext)
      8->CapabilityScreen(NAV[screen].name,"No browser executor is installed. Your library remains available in Knowledge.")
      else->Orbit(screen,animations,active,contextItems,::selectObject,::toggleContext)
     }}
@@ -97,58 +96,96 @@ class MainActivity:ComponentActivity(){
   Box(Modifier.size(31.dp).clip(RoundedCornerShape(4.dp)).background(Color(0xFF15223B))){Canvas(Modifier.fillMaxSize()){
    val s=size.minDimension/2.8f;drawRect(Color(0xFFFFD438),Offset(2f,2f),Size(s,s));drawRect(CYAN,Offset(s+5,2f),Size(s,s))
    drawRect(PURPLE,Offset(2f,s+5),Size(s,s));drawRect(Color(0xFFFF4EC4),Offset(s+5,s+5),Size(s,s))
-  }};Spacer(Modifier.width(8.dp));Column{Text("Open Mine",color=MAIN,fontSize=18.sp,fontWeight=FontWeight.SemiBold);Text("AI WORKSPACE ENVIRONMENT",color=DIM,fontSize=12.sp,letterSpacing=1.sp)}
+  }};Spacer(Modifier.width(8.dp));Column{Text("Open Mine",color=MAIN,fontSize=18.sp,fontWeight=FontWeight.SemiBold);Text("AI WORKSPACE ENVIRONMENT",color=DIM,fontSize=9.sp,letterSpacing=.4.sp,maxLines=1)}
  }
  Pill("LIBRARY","ON DEVICE")
 }}
 
 @Composable fun Pill(a:String,b:String){Column(Modifier.clip(RoundedCornerShape(8.dp)).background(PANEL).padding(horizontal=9.dp,vertical=5.dp)){Text(a,color=MAIN,fontSize=12.sp);Text(b,color=DIM,fontSize=12.sp)}}
 
-@Composable fun Rail(selected:Int,onSelect:(Int)->Unit){Column(Modifier.width(91.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(4.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
+@Composable fun Rail(selected:Int,onSelect:(Int)->Unit){Column(Modifier.width((LocalConfiguration.current.screenWidthDp*.22f).coerceIn(76f,112f).dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(4.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
  NAV.forEachIndexed{i,n->Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clip(RoundedCornerShape(8.dp)).background(if(i==selected)Color(0x332AD8FF)else Color.Transparent).clickable{onSelect(i)}.padding(6.dp),verticalAlignment=Alignment.CenterVertically){
-  Icon(n.icon,null,tint=if(i==selected)CYAN else DIM,modifier=Modifier.size(17.dp));Spacer(Modifier.width(5.dp));Column{Text(n.name,color=if(i==selected)MAIN else DIM,fontSize=12.sp)}
+  Icon(n.icon,null,tint=if(i==selected)CYAN else DIM,modifier=Modifier.size(17.dp));Spacer(Modifier.width(5.dp));Column{Text(n.name,color=if(i==selected)MAIN else DIM,fontSize=10.sp,maxLines=2)}
  }}}}
+
+@Composable fun WorkspaceScreen(screen:Int,animations:Boolean,active:String,contextItems:Set<String>,onSelect:(Orb)->Unit,onToggleContext:(Orb)->Unit){
+ var manage by remember(screen){mutableStateOf(false)}
+ BackHandler(manage){manage=false}
+ val c=LocalContext.current
+ if(manage){Column(Modifier.fillMaxSize()){
+  TextButton({manage=false}){Icon(Icons.Default.ArrowBack,null);Text("Back to workspace")}
+  Box(Modifier.weight(1f)){if(screen==0)RuntimeScreen(c,false)else Knowledge(c,when(screen){1->"PROJECT";2->"CONNECTOR";4->"SKILL";5->"MISSION";6->"TOOL";7->"FILE";else->null})}
+ }}else Column(Modifier.fillMaxSize()){
+  TextButton({manage=true},Modifier.align(Alignment.End)){Text(if(screen==0)"MODEL RUNTIME + IMPORT" else "CREATE / IMPORT / MANAGE")}
+  Box(Modifier.weight(1f)){Orbit(screen,animations,active,contextItems,onSelect,onToggleContext)}
+ }
+}
 
 @Composable fun Orbit(screen:Int,animations:Boolean,active:String,contextItems:Set<String>,onSelect:(Orb)->Unit,onToggleContext:(Orb)->Unit){
  val c=LocalContext.current
- val type=when(screen){0->"MODEL";1->"PROJECT";2->"CONNECTOR";4->"SKILL";5->"MISSION";7->"FILE";else->"KNOWLEDGE"}
- val items=remember(screen){OpenMineObjectStore.all(c).filter{it.type==type}.map{Orb(it.title,it.status,CYAN,NAV[screen].icon,it.id,it)}}
- if(items.isEmpty()){CapabilityScreen(NAV[screen].name,"No ${type.lowercase()} records yet. Create or import labeled records in Knowledge. "+when(screen){0->"GGUF inference is not installed. A model record does not load weights.";2->"Service authentication and remote actions are not implemented.";else->"Your records stay on this device across model switches."});return}
- LazyColumn(Modifier.fillMaxSize().padding(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-  item{Text(NAV[screen].name,color=MAIN,fontSize=24.sp,fontWeight=FontWeight.Bold)}
+ val type=when(screen){0->"MODEL";1->"PROJECT";2->"CONNECTOR";4->"SKILL";5->"MISSION";6->"TOOL";7->"FILE";else->"KNOWLEDGE"}
+ val accents=listOf(CYAN,PURPLE,Color(0xFFFFD438),Color(0xFFFF4EC4),BLUE)
+ val items=OpenMineObjectStore.all(c).filter{it.type==type}.mapIndexed{i,o->Orb(o.title,o.status,accents[i%accents.size],NAV[screen].icon,o.id,o)}
+ LazyColumn(Modifier.fillMaxSize().padding(horizontal=8.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+  item{Text(NAV[screen].name,color=MAIN,fontSize=20.sp,fontWeight=FontWeight.Bold)}
   item{OrbitalGallery(items,active,onSelect,animations)}
-  item{ContextPanel(screen,items.firstOrNull{it.id==active}?:items.first(),contextItems,onToggleContext)}
-  item{Carousel(items,onSelect)}
+  if(items.isEmpty())item{Text("No ${type.lowercase()} records yet. Create or import your own records using the management control above. Model weights are available in Model Runtime.",color=DIM,fontSize=14.sp)}
+  else{
+   item{ContextPanel(screen,items.firstOrNull{it.id==active}?:items.first(),contextItems,onToggleContext)}
+   item{Carousel(items,onSelect)}
+  }
  }
 }
 
 @Composable fun OrbitalGallery(items:List<Orb>,active:String,onSelect:(Orb)->Unit,animations:Boolean){
- val start=(items.indexOfFirst{it.id==active}.coerceAtLeast(0)/4)*4
- val visible=items.drop(start).take(4)
+ val start=(items.indexOfFirst{it.id==active}.coerceAtLeast(0)/6)*6
+ val visible=items.drop(start).take(6)
  val pulse=if(animations)rememberInfiniteTransition(label="orbit").animateFloat(.5f,1f,infiniteRepeatable(tween(1800),RepeatMode.Reverse),label="glow").value else 1f
- BoxWithConstraints(Modifier.fillMaxWidth().height(380.dp)){
-  val width=maxWidth.value;val cardWidth=minOf(120f,width*.44f);val centerX=width/2;val centerY=190f
+ val galleryHeight=((LocalConfiguration.current.screenHeightDp-150)*.48f).coerceIn(260f,360f)
+ BoxWithConstraints(Modifier.fillMaxWidth().height(galleryHeight.dp)){
+  val width=maxWidth.value;val cardWidth=(width-12f)/2;val centerX=width/2
   Canvas(Modifier.fillMaxSize()){
    val center=Offset(size.width/2,size.height/2)
-   for(i in 1..4)drawOval(CYAN.copy(alpha=.08f*pulse),Offset(size.width*(.5f-i*.1f),size.height*(.5f-i*.1f)),Size(size.width*i*.2f,size.height*i*.2f),style=Stroke(1.dp.toPx()))
-   drawRoundRect(Brush.linearGradient(listOf(BLUE,PURPLE)),center-Offset(20.dp.toPx(),20.dp.toPx()),Size(40.dp.toPx(),40.dp.toPx()),CornerRadius(10.dp.toPx()))
+   for(i in 1..4)drawCircle((if(i%2==0)PURPLE else CYAN).copy(alpha=(.12f+i*.025f)*pulse),radius=minOf((12+i*7).dp.toPx(),size.width*.17f),center=center,style=Stroke(2.dp.toPx()))
+   drawRoundRect(Brush.linearGradient(listOf(BLUE,PURPLE)),center-Offset(16.dp.toPx(),16.dp.toPx()),Size(32.dp.toPx(),32.dp.toPx()),CornerRadius(8.dp.toPx()))
   }
-  visible.forEachIndexed{i,o->val x=when(i){1->width-cardWidth;3->0f;else->centerX-cardWidth/2};val y=when(i){0->8f;2->280f;else->centerY-46f}
-   Surface(Modifier.offset(x.dp,y.dp).width(cardWidth.dp).heightIn(min=92.dp).clickable{onSelect(o)},color=if(o.id==active)Color(0xFF132C48)else PANEL,shape=RoundedCornerShape(16.dp),shadowElevation=6.dp){
-    Column(Modifier.padding(10.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){Icon(o.icon,null,tint=CYAN,modifier=Modifier.size(24.dp));Text(o.title,color=MAIN,fontSize=14.sp,maxLines=2);Text(o.sub,color=DIM,fontSize=12.sp)}
+  visible.forEachIndexed{i,o->
+   val petalWidth=if(i/2==1)width*.30f else cardWidth
+   val x=if(i%2==0)0f else width-petalWidth
+   val y=when(i/2){0->0f;1->galleryHeight/2-48f;else->galleryHeight-96f}
+   Surface(Modifier.offset(x.dp,y.dp).width(petalWidth.dp).height(96.dp).clickable{onSelect(o)},color=if(o.id==active)Color(0xFF132C48)else PANEL,shape=RoundedCornerShape(12.dp),shadowElevation=4.dp){
+    Column(Modifier.padding(8.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){
+     Row(verticalAlignment=Alignment.CenterVertically){Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(20.dp));Spacer(Modifier.weight(1f));Text("${start+i+1}",color=DIM,fontSize=11.sp)}
+     Text(o.title,color=MAIN,fontSize=13.sp,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+     Text(o.sub,color=o.accent,fontSize=11.sp,maxLines=1)
+    }
    }
   }
  }
+ if(items.size>6)Text("${start+1}–${minOf(start+6,items.size)} of ${items.size} · select another card below",color=DIM,fontSize=11.sp)
 }
 
 @Composable fun ContextPanel(screen:Int,current:Orb?,contextItems:Set<String>,onToggleContext:(Orb)->Unit){
  var inspect by remember(current?.id){mutableStateOf(false)}
- if(inspect && current?.record!=null)AlertDialog(onDismissRequest={inspect=false},confirmButton={TextButton({inspect=false}){Text("Close")}},title={Text(current.title)},text={Column(Modifier.verticalScroll(rememberScrollState())){ObjectInspector(current.record)}})
- Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(PANEL).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+ var tab by remember(current?.id){mutableIntStateOf(0)}
+ val record=current?.record
+ if(inspect && record!=null)AlertDialog(onDismissRequest={inspect=false},confirmButton={TextButton({inspect=false}){Text("Close")}},title={Text(current.title)},text={Column(Modifier.verticalScroll(rememberScrollState())){ObjectInspector(record)}})
+ Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(PANEL).padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
   Text(current?.title.orEmpty(),color=MAIN,fontSize=20.sp,fontWeight=FontWeight.Bold)
-  Text("${contextItems.size} library records selected for context",color=DIM,fontSize=14.sp)
-  Button({current?.let{onToggleContext(it)}},Modifier.fillMaxWidth()){Text(if(current?.id in contextItems)"Remove from context" else "Add to context")}
-  OutlinedButton({inspect=true},Modifier.fillMaxWidth()){Text("Inspect record")}
+  Text(current?.sub.orEmpty()+" · ${contextItems.size} context records",color=DIM,fontSize=12.sp)
+  Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())){listOf("Overview","Context","Tools","Related").forEachIndexed{i,label->TextButton({tab=i},contentPadding=PaddingValues(horizontal=8.dp)){Text(label,color=if(tab==i)CYAN else DIM,fontSize=12.sp)}}}
+  HorizontalDivider(color=DIM.copy(alpha=.2f))
+  val content=when(tab){
+   0->record?.fields?.get("OBJECT_SUMMARY")
+   1->record?.sections?.get("CONTENT")?.get("CONTENT_FACTS")
+   2->record?.sections?.get("CONTENT")?.get("CONTENT_PROCEDURE")
+   else->record?.sections?.get("RELATIONSHIPS")?.entries?.filter{it.value!="NONE"}?.joinToString("\n"){it.key+": "+it.value}
+  }
+  Text(content?.takeUnless{it=="NONE" || it.isBlank()} ?: "No ${listOf("overview","context facts","tool procedure","related records")[tab]} recorded.",color=DIM,fontSize=14.sp)
+  Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+   Button({current?.let{onToggleContext(it)}},Modifier.weight(1f).heightIn(min=48.dp)){Text(if(current?.id in contextItems)"Remove context" else "Add to Context",fontSize=13.sp)}
+   OutlinedIconButton({inspect=true},Modifier.size(48.dp)){Icon(Icons.Default.Description,"Inspect labeled record")}
+  }
  }
 }
 
@@ -172,7 +209,8 @@ class MainActivity:ComponentActivity(){
    require(bytes.size<=1024*1024){"Import exceeds 1 MiB"}
    Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
   } ?: error("Cannot open selected file")}.getOrElse{status="IMPORT REJECTED: ${it.message}";return@rememberLauncherForActivityResult}
-  val result=OpenMineObjectStore.import(c,raw)
+  val checked=OpenMineObjectFormat.validate(raw)
+  val result=if(category!=null && checked.valid && checked.normalized?.type!=category)ValidationResult(false,listOf("Expected a $category record for this category; import other types in Knowledge.")) else OpenMineObjectStore.import(c,raw)
   if(result.valid){objects=OpenMineObjectStore.all(c);status="IMPORTED + INDEXED: "+result.normalized!!.id;selectedObject=result.normalized}
   else status="IMPORT REJECTED: "+result.errors.take(3).joinToString(" Â· ")
  }
