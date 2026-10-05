@@ -3,6 +3,7 @@ name: Build Open Mine APK
 on:
   push:
     branches: [ main ]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -26,20 +27,23 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses >/dev/null || true
+      - name: Locate installed Android SDK tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
       - name: Install Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: '"$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"'
 
       - name: Make Gradle executable
         run: chmod +x gradlew
 
       - name: Compile checks
-        run: ./gradlew --no-daemon :app:compileDebugKotlin
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :app:bundleRelease
 
       - name: Verify APK
         run: |
