@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "com.openmine"
     compileSdk = 36
-    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 2; versionName = "0.2.0-dev" }
+    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 3; versionName = "0.2.1-dev" }
     buildFeatures { compose = true; buildConfig = true }
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
@@ -29,4 +29,20 @@ dependencies {
 
 kotlin {
     jvmToolchain(17)
+}
+
+val verifyLinuxShellAssets by tasks.registering {
+    val scripts=fileTree("src/main/assets") { include("**/*.sh") }
+    inputs.files(scripts)
+    doLast {
+        scripts.forEach { script ->
+            val bytes=script.readBytes()
+            check(!bytes.contains(13.toByte())) { "${script.name}: Linux shell asset contains CR line endings" }
+            check(!bytes.take(3).toByteArray().contentEquals(byteArrayOf(0xEF.toByte(),0xBB.toByte(),0xBF.toByte()))) { "${script.name}: shell asset contains UTF-8 BOM" }
+            check(bytes.size >= 2 && bytes[0]==35.toByte() && bytes[1]==33.toByte()) { "${script.name}: missing shebang" }
+        }
+    }
+}
+tasks.configureEach {
+    if(name.startsWith("merge") && name.endsWith("Assets")) dependsOn(verifyLinuxShellAssets)
 }

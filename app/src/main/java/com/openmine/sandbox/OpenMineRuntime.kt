@@ -33,6 +33,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
     val ready get()=marker.exists()
     private val modelDir get()=File(home,".morsvitaest/llm/models").apply{mkdirs()}
     init{refreshModels()}
+    private fun refreshEngineScript(){context.assets.open("sandbox/morsllm.sh").use{ShellScriptInstaller.install(File(home,"morsllm.sh"),it.readBytes())}}
     private fun executor()=ProotExecutor(File(context.applicationInfo.nativeLibraryDir,"libproot.so").absolutePath,base.absolutePath,rootfs.absolutePath,home.absolutePath,tmp.absolutePath)
     private fun run(label:String,action:suspend ()->Unit){
         if(busy.value)return
@@ -66,8 +67,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         _status.value="Installing shell and engine prerequisites"
         val result=executor().execute("apk add --no-cache bash curl jq git",180)
         output.value=result.toString();check(result["success"]==true){"Linux prerequisites failed. See output and retry setup."}
-        val script=File(home,"morsllm.sh")
-        context.assets.open("sandbox/morsllm.sh").use{input->script.outputStream().use{input.copyTo(it)}}
+        refreshEngineScript()
         marker.writeText("ready")
         _status.value="Linux shell ready"
     }
@@ -90,7 +90,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         check(ready){"Set up Linux shell first."}
         check(action in setOf("provision","serve","stop","status")){"Unsupported engine action"}
         check(action!="provision" || BuildConfig.DEBUG){"Engine downloads are disabled in release builds."}
-        context.assets.open("sandbox/morsllm.sh").use{input->File(home,"morsllm.sh").outputStream().use{input.copyTo(it)}}
+        refreshEngineScript()
         val argument=if(action=="serve")" '${model.replace("'","'\\''")}'" else ""
         var tail=""
         val running=executor().executeStreaming("bash /root/morsllm.sh $action$argument",onStdout={line->synchronized(this){tail=(tail+line+"\n").takeLast(20000);output.value=tail}},onStderr={line->synchronized(this){tail=(tail+"stderr: "+line+"\n").takeLast(20000);output.value=tail}})
