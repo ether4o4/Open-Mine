@@ -36,13 +36,13 @@ class ProotHandle internal constructor(
         }
     }
 
-    fun awaitExit(): Int {
-        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(30)
+    fun awaitExit(timeoutMinutes: Long = 30): Int {
+        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(timeoutMinutes)
         // Poll so a cancel() from another thread can short-circuit the wait.
         // On Linux, close(fd) does NOT unblock a thread already inside read(fd),
         // so reader futures can sit waiting on a tracee pipe even after SIGKILL.
         while (!cancelled.get() && process.isAlive) {
-            if (System.nanoTime() >= deadline) { cancel(); return 124 }
+            if (timeoutMinutes > 0 && System.nanoTime() >= deadline) { cancel(); return 124 }
             runCatching { process.waitFor(200, TimeUnit.MILLISECONDS) }
         }
         if (cancelled.get()) return -1

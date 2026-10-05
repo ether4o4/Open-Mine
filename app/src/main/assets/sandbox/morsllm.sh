@@ -162,11 +162,16 @@ cmd_provision() {
     # we'd produce in-sandbox, just cross-compiled in CI and published as a
     # release asset. Falls through to source compile if download or exec
     # check fails (network down, release not built yet, arch mismatch).
-    if [ ! -x "$LLAMA_SERVER" ]; then
+    if [ -x "$LLAMA_SERVER" ] && "$LLAMA_SERVER" --version >/dev/null 2>&1; then
+        emit "{\"ok\":true,\"already_built\":true,\"path\":\"$LLAMA_SERVER\"}"
+        provision_emitted=1
+        return 0
+    fi
+    if [ "$(uname -m)" = "aarch64" ] && [ ! -x "$LLAMA_SERVER" ]; then
         prebuilt_url="https://github.com/ether4o4/NeverSoft-Services-OS/releases/download/llama-server-prebuilt-latest/llama-server-aarch64-musl"
         mkdir -p "$BIN_DIR"
         log "provision: trying pre-built binary at $prebuilt_url"
-        if curl -fsSL --max-time 120 -o "$LLAMA_SERVER.tmp" "$prebuilt_url" 2>/dev/null \
+        if curl -fsSL --max-time 120 -o "$LLAMA_SERVER.tmp" "$prebuilt_url" \
             && [ -s "$LLAMA_SERVER.tmp" ] \
             && curl -fsSL --max-time 30 -o "$LLAMA_SERVER.sha256" "${prebuilt_url%/*}/sha256.txt" \
             && printf '%s  %s\n' "$(awk '{print $1}' "$LLAMA_SERVER.sha256")" "$LLAMA_SERVER.tmp" | sha256sum -c - >/dev/null 2>&1; then

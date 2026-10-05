@@ -23,7 +23,10 @@ class OpenMineRuntime private constructor(private val context:Context) {
     private val _status=MutableStateFlow(if(marker.exists())"Linux shell installed" else "Linux shell needs setup")
     val status:StateFlow<String> = _status
     val busy=MutableStateFlow(false)
-    val output=MutableStateFlow("")
+    private val transcript=File(base,"terminal-transcript.txt")
+    val output=MutableStateFlow(runCatching{transcript.readText().takeLast(20000)}.getOrDefault(""))
+    val terminalOutput=MutableStateFlow(output.value)
+    private val session by lazy { PersistentSandboxShell(executor(),tmp.absolutePath,runCatching{File(base,"terminal-cwd.txt").readText()}.getOrDefault("/root")) }
     val models=MutableStateFlow<List<String>>(emptyList())
     private var job:Job?=null
     private var handle:ProotHandle?=null
@@ -33,10 +36,10 @@ class OpenMineRuntime private constructor(private val context:Context) {
     private fun executor()=ProotExecutor(File(context.applicationInfo.nativeLibraryDir,"libproot.so").absolutePath,base.absolutePath,rootfs.absolutePath,home.absolutePath,tmp.absolutePath)
     private fun run(label:String,action:suspend ()->Unit){
         if(busy.value)return
-        busy.value=true;_status.value=label;output.value=""
+        busy.value=true;_status.value=label;if(label!="Running command") output.value=""
         job=scope.launch{try{action()}catch(e:CancellationException){_status.value="Cancelled"}catch(e:Exception){_status.value="Failed: ${e.message}"}finally{handle=null;busy.value=false}}
     }
-    fun cancel(){handle?.cancel();job?.cancel()}
+    fun cancel(){session.cancelForeground();handle?.cancel();job?.cancel()}
     fun setup()=run("Setting up Linux shell"){
         check(BuildConfig.DEBUG){"Runtime downloads are disabled in release builds pending Play-compatible packaging."}
         check(File(context.applicationInfo.nativeLibraryDir,"libproot.so").canExecute()){"No executable PRoot binary for this device ABI."}
@@ -70,8 +73,11 @@ class OpenMineRuntime private constructor(private val context:Context) {
     }
     fun command(command:String)=run("Running command"){
         check(ready){"Set up Linux shell first."}
-        val result=executor().execute(command,30)
-        output.value=result.toString()
+        val result=session.run(command,30)
+        output.value=(terminalOutput.value+"\n$ "+command+"\n"+result.toString()).takeLast(20000)
+        terminalOutput.value=output.value
+        transcript.writeText(output.value)
+        if(result["shell_died"]!=true) File(base,"terminal-cwd.txt").writeText(result["cwd"].toString())
         _status.value=if(result["success"]==true)"Command finished" else "Command failed; inspect exit code and output"
     }
     fun systemInfo():String {
@@ -84,14 +90,25 @@ class OpenMineRuntime private constructor(private val context:Context) {
         check(ready){"Set up Linux shell first."}
         check(action in setOf("provision","serve","stop","status")){"Unsupported engine action"}
         check(action!="provision" || BuildConfig.DEBUG){"Engine downloads are disabled in release builds."}
+        context.assets.open("sandbox/morsllm.sh").use{input->File(home,"morsllm.sh").outputStream().use{input.copyTo(it)}}
         val argument=if(action=="serve")" '${model.replace("'","'\\''")}'" else ""
         var tail=""
-        val running=executor().executeStreaming("bash /root/morsllm.sh $action$argument",onStdout={line->synchronized(this){tail=(tail+line+"\n").takeLast(20000);output.value=tail}},onStderr={line->_status.value=line.takeLast(240)})
+        val running=executor().executeStreaming("bash /root/morsllm.sh $action$argument",onStdout={line->synchronized(this){tail=(tail+line+"\n").takeLast(20000);output.value=tail}},onStderr={line->synchronized(this){tail=(tail+"stderr: "+line+"\n").takeLast(20000);output.value=tail}})
         handle=running
         val exit=withContext(Dispatchers.IO){running.awaitExit()}
         val json=tail.lines().lastOrNull{it.trim().startsWith("{")}.orEmpty()
         val parsed=runCatching{JSONObject(json)}.getOrNull()
-        check(exit==0 && parsed?.optBoolean("ok")==true){"Engine action failed. Inspect output/logs; no success was assumed."}
+        if(exit!=0 || parsed?.optBoolean("ok")!=true){
+            val logPath=parsed?.optString("log_path").orEmpty()
+            val prefix="/root/.morsvitaest/llm/"
+            if(logPath.startsWith(prefix)){
+                val log=File(home,logPath.removePrefix("/root/"))
+                if(log.canonicalPath.startsWith(File(home,".morsvitaest/llm").canonicalPath+File.separator) && log.isFile){
+                    output.value=(tail+"\nBUILD LOG:\n"+log.readText().takeLast(12000)).takeLast(32000)
+                }
+            }
+            error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: ${parsed?.optString("detail").orEmpty()}. See retained output.")
+        }
         _status.value=if(action=="serve")"Model health check passed; AI Chat can use http://127.0.0.1:8080/v1" else "Engine $action completed"
     }
     fun importModel(uri:Uri)=run("Importing GGUF model"){

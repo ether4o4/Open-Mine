@@ -82,7 +82,8 @@ class MainActivity:ComponentActivity(){
      12->AssistantScreen(c)
      0,9->RuntimeScreen(c,screen==9)
      3->Knowledge(c)
-     6->LibraryTools(c)
+     4->Knowledge(c,"SKILL")
+     6->Knowledge(c,"TOOL")
      8->CapabilityScreen(NAV[screen].name,"No browser executor is installed. Your library remains available in Knowledge.")
      else->Orbit(screen,animations,active,contextItems,::selectObject,::toggleContext)
     }}
@@ -152,12 +153,14 @@ class MainActivity:ComponentActivity(){
 }
 
 @Composable fun Carousel(items:List<Orb>,onSelect:(Orb)->Unit){Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){items.forEach{o->Surface(Modifier.width(140.dp).heightIn(min=64.dp).clickable{onSelect(o)},color=PANEL,shape=RoundedCornerShape(12.dp)){Column(Modifier.padding(8.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(o.icon,null,tint=o.accent,modifier=Modifier.size(20.dp));Text(o.title,color=DIM,fontSize=12.sp,maxLines=2)}}}}}
-@Composable fun Knowledge(c:Context){
+@Composable fun Knowledge(c:Context, category:String?=null){
  var objects by remember{mutableStateOf(OpenMineObjectStore.all(c))}
  var query by remember{mutableStateOf("")}
  var editor by remember{mutableStateOf(false)}
  var status by remember{mutableStateOf("")}
  var selectedObject by remember{mutableStateOf<StrictObject?>(null)}
+ var rawEdit by remember{mutableStateOf<String?>(null)}
+ var confirmDelete by remember{mutableStateOf(false)}
  BackHandler(editor || selectedObject != null) { if(editor) editor=false else selectedObject=null }
  val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
   if(uri==null)return@rememberLauncherForActivityResult
@@ -173,10 +176,10 @@ class MainActivity:ComponentActivity(){
   if(result.valid){objects=OpenMineObjectStore.all(c);status="IMPORTED + INDEXED: "+result.normalized!!.id;selectedObject=result.normalized}
   else status="IMPORT REJECTED: "+result.errors.take(3).joinToString(" · ")
  }
- if(editor){CreateObjectScreen(c,{objects=OpenMineObjectStore.all(c);editor=false;status="CREATED + INDEXED"},{editor=false}, {status=it}) ;return}
+ if(editor){CreateObjectScreen(c,{objects=OpenMineObjectStore.all(c);editor=false;status="CREATED + INDEXED"},{editor=false}, {status=it},category ?: "KNOWLEDGE") ;return}
  LazyColumn(Modifier.fillMaxSize().padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
   item{
-   Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("ENGINEERING VAULT",color=MAIN,fontSize=22.sp,fontWeight=FontWeight.Bold);Text("STRICT OBJECTS · VALIDATE · INDEX · RETRIEVE",color=DIM,fontSize=12.sp)}
+   Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(category?.let{"${it}S"} ?: "ENGINEERING VAULT",color=MAIN,fontSize=22.sp,fontWeight=FontWeight.Bold);Text("STRICT OBJECTS · VALIDATE · INDEX · RETRIEVE",color=DIM,fontSize=12.sp)}
     Button({editor=true},shape=RoundedCornerShape(8.dp),contentPadding=PaddingValues(horizontal=10.dp,vertical=7.dp)){Text("+ CREATE",fontSize=12.sp)}
    }
    Spacer(Modifier.height(6.dp))
@@ -186,7 +189,7 @@ class MainActivity:ComponentActivity(){
    Spacer(Modifier.height(5.dp));OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("RETRIEVAL QUERY",fontSize=12.sp)},placeholder={Text("ollama android connection...",fontSize=12.sp)})
    if(status.isNotBlank())Text(status,color=if(status.contains("REJECTED"))Color(0xFFFF6B6B)else CYAN,fontSize=12.sp)
   }
-  val shown=if(query.isBlank())objects else OpenMineObjectStore.search(c,query)
+  val shown=(if(query.isBlank())objects else OpenMineObjectStore.search(c,query)).filter{category==null || it.fields["OBJECT_TYPE"]==category}
   if(shown.isEmpty())item{Text(if(objects.isEmpty())"Your library is empty. Create a labeled record or import a UTF-8 .omd file (up to 1 MiB). JSON, PDF and model weights are not supported imports." else "No matching knowledge. Try another keyword.",color=DIM,fontSize=14.sp)}
   items(shown){o->
    Surface(Modifier.fillMaxWidth().clickable{selectedObject=o},color=PANEL,shape=RoundedCornerShape(12.dp)){
@@ -195,8 +198,20 @@ class MainActivity:ComponentActivity(){
     }
    }
   }
-  selectedObject?.let{o->item{ObjectInspector(o)}}
+  selectedObject?.let{o->item{
+   ObjectInspector(o)
+   Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+    OutlinedButton({rawEdit=o.raw}){Text("EDIT")}
+    OutlinedButton({confirmDelete=true}){Text("DELETE")}
+   }
+  }}
  }
+ rawEdit?.let{raw->AlertDialog(onDismissRequest={rawEdit=null},title={Text("Edit labeled record")},text={OutlinedTextField(raw,{rawEdit=it},Modifier.heightIn(max=400.dp).verticalScroll(rememberScrollState()))},confirmButton={TextButton({
+  selectedObject?.let{o->val result=OpenMineObjectStore.update(c,o.id,raw);if(result.valid){objects=OpenMineObjectStore.all(c);selectedObject=result.normalized;rawEdit=null;status="UPDATED + INDEXED"}else status=result.errors.joinToString("; ")}
+ }){Text("VALIDATE + SAVE")}},dismissButton={TextButton({rawEdit=null}){Text("CANCEL")}})}
+ if(confirmDelete)AlertDialog(onDismissRequest={confirmDelete=false},title={Text("Delete record?")},text={Text("This removes the selected record and its retrieval index entries.")},confirmButton={TextButton({
+  runCatching{selectedObject?.let{OpenMineObjectStore.delete(c,it)}}.onSuccess{objects=OpenMineObjectStore.all(c);selectedObject=null;status="DELETED"}.onFailure{status="Delete failed: ${it.message}"};confirmDelete=false
+ }){Text("DELETE")}},dismissButton={TextButton({confirmDelete=false}){Text("CANCEL")}})
 }
 
 @Composable fun ObjectInspector(o:StrictObject){
@@ -206,8 +221,8 @@ class MainActivity:ComponentActivity(){
  }}
 }
 
-@Composable fun CreateObjectScreen(c:Context,onDone:()->Unit,onCancel:()->Unit,onStatus:(String)->Unit){
- var type by remember{mutableStateOf("KNOWLEDGE")};var title by remember{mutableStateOf("")};var summary by remember{mutableStateOf("")};var tags by remember{mutableStateOf("")};var source by remember{mutableStateOf("")}
+@Composable fun CreateObjectScreen(c:Context,onDone:()->Unit,onCancel:()->Unit,onStatus:(String)->Unit,initialType:String="KNOWLEDGE"){
+ var type by remember{mutableStateOf(initialType)};var title by remember{mutableStateOf("")};var summary by remember{mutableStateOf("")};var tags by remember{mutableStateOf("")};var source by remember{mutableStateOf("")}
  var purpose by remember{mutableStateOf("")};var facts by remember{mutableStateOf("")};var procedure by remember{mutableStateOf("")};var constraints by remember{mutableStateOf("")};var examples by remember{mutableStateOf("")}
  var keywords by remember{mutableStateOf("")};var aliases by remember{mutableStateOf("")};var triggers by remember{mutableStateOf("")};var project by remember{mutableStateOf("NONE")};var model by remember{mutableStateOf("NONE")};var skill by remember{mutableStateOf("NONE")};var tool by remember{mutableStateOf("NONE")};var mission by remember{mutableStateOf("NONE")}
  var query by remember{mutableStateOf("")};var whenText by remember{mutableStateOf("")};var exclude by remember{mutableStateOf("")};var verificationSource by remember{mutableStateOf("")};var notes by remember{mutableStateOf("")};var errors by remember{mutableStateOf(emptyList<String>())}
@@ -299,7 +314,7 @@ class MainActivity:ComponentActivity(){
  val runtime=remember{com.openmine.sandbox.OpenMineRuntime.get(c)}
  val status by runtime.status.collectAsState()
  val busy by runtime.busy.collectAsState()
- val output by runtime.output.collectAsState()
+ val output by (if(terminal)runtime.terminalOutput else runtime.output).collectAsState()
  val models by runtime.models.collectAsState()
  var command by remember{mutableStateOf("")}
  var confirm by remember{mutableStateOf(false)}

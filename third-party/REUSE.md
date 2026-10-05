@@ -4,7 +4,8 @@ Source: https://github.com/ether4o4/NeverSoft-Services-OS/tree/9786327e246adf745
 
 Selected source is incorporated into Open Mine. Open Mine does not depend on the MVE application.
 
-- `ProotExecutor.kt`: process execution, concurrent bounded output, environment and timeout handling. Package name and truncation helper adapted; streaming operations capped at 30 minutes.
+- `ProotExecutor.kt`: process execution, concurrent bounded output, environment and timeout handling. Package name and truncation helper adapted; engine streaming operations capped at 30 minutes; persistent shell lifetime is uncapped with per-command timeouts.
+- `PersistentSandboxShell.kt`: serialized live Bash session, command sentinels, bounded output and foreground cancellation. Package/helper adapted; cwd restored on process restart.
 - `RootfsDownloader.kt`: Alpine URLs, tar extraction and rootfs configuration. Ktor transport replaced with Android HTTP transport; SHA-256 verification, extraction limits, staging and hardlink/path checks added.
 - `morsllm.sh`: existing GGUF engine provisioning, model validation, start/stop/status and health checks. Release URL updated; prebuilt checksum verified; model alias set to `local`.
 - PRoot/loader/talloc binaries copied from the source repository's `androidApp/src/main/jniLibs`.

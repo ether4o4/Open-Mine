@@ -159,6 +159,23 @@ object OpenMineObjectStore {
         return r
     }
 
+    fun update(c:Context,id:String,raw:String):ValidationResult {
+        val result=OpenMineObjectFormat.validate(raw)
+        if(!result.valid)return result
+        if(result.normalized!!.id!=id)return ValidationResult(false,listOf("Editing cannot change the object ID"))
+        val target=File(dir(c),id+".omd")
+        if(!target.isFile)return ValidationResult(false,listOf("Object no longer exists"))
+        val previous=target.readText()
+        return try{atomicWrite(target,result.normalized.raw);rebuildIndex(c);result}
+        catch(e:Exception){atomicWrite(target,previous);ValidationResult(false,listOf("Update failed: ${e.message}"))}
+    }
+    fun delete(c:Context,o:StrictObject){
+        val target=File(dir(c),o.id+".omd")
+        val previous=target.readText()
+        check(target.delete()){"Could not delete object"}
+        try{rebuildIndex(c)}catch(e:Exception){atomicWrite(target,previous);throw e}
+    }
+
     private fun atomicWrite(file:File, value:String) {
         val atomic = AtomicFile(file)
         val stream = atomic.startWrite()
