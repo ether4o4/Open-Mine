@@ -2,10 +2,12 @@ package com.openmine
 
 import android.graphics.Bitmap
 import android.os.Environment
+import android.os.SystemClock
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -62,10 +64,14 @@ class HudInteractionTest {
 
     private fun capture(name: String) {
         compose.waitForIdle()
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        // Let the emulator's render thread submit the updated scene before PixelCopy.
+        SystemClock.sleep(400)
         val directory = compose.activity.getExternalFilesDir(Environment.DIRECTORY_PICTURES)!!
         directory.mkdirs()
         val bitmap = compose.onNodeWithTag("hud-root").captureToImage().asAndroidBitmap()
         File(directory, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         File(directory, "$name.jpg").outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        bitmap.recycle()
     }
 }

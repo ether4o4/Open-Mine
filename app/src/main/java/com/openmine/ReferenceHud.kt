@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import android.content.Context
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +25,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
@@ -32,6 +34,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 private val Ink = Color(0xFF040C17)
 private val Glass = Color(0xDA071321)
@@ -41,7 +44,11 @@ private val White = Color(0xFFF0F6FB)
 private val Muted = Color(0xFF9BACBF)
 private val Violet = Color(0xFFAC7CF6)
 private val Ready = Color(0xFF78DBB8)
-private val HudFont = FontFamily.SansSerif
+private val HudFont = FontFamily(
+    Font(R.font.ubuntu_regular, FontWeight.Normal),
+    Font(R.font.ubuntu_medium, FontWeight.Medium),
+    Font(R.font.ubuntu_bold, FontWeight.Bold)
+)
 
 internal data class HudItem(
     val objectRef: Orb,
@@ -164,20 +171,21 @@ internal fun ReferenceHud(
     } else 1f
     var tab by remember(screen, current.objectRef.title) { mutableStateOf("OVERVIEW") }
     var menu by remember(screen, current.objectRef.title) { mutableStateOf(false) }
-    var carouselStart by remember(screen) { mutableIntStateOf(1) }
+    val carouselItems = if (category == 0) listOf(0, 1, 2, 8, 6, 3, 4, 5, 7).map { items[it] } else items
+    var carouselStart by remember(screen) { mutableIntStateOf(if (category == 0) 0 else 1) }
 
     Box(Modifier.fillMaxSize().background(Ink).testTag("hud-root")) {
         HudArtboard {
-            HudImage("background.png", Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
+            HudImage("background.png", Modifier.offset((-22).dp, 0.dp).fillMaxSize().graphicsLayer { alpha = .78f }, contentScale = ContentScale.FillBounds)
             HudHeader()
             HudRail(screen, onNavigate)
             HudLocation()
             HudStats(category, contextItems.size)
             if (screen < 4) {
-                Column(Modifier.offset(339.dp, 413.dp).size(195.dp, 190.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.offset(315.dp, 413.dp).size(195.dp, 190.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     HudText(HudNavNames[category], 14, weight = FontWeight.Bold)
-                    HudSprite("hubs.png", category, 2, Modifier.size(151.dp).graphicsLayer { alpha = pulse })
-                    HudText(HudNavNames[category] + "    %02d".format(category + 1), 12, color = Muted)
+                    HudHubArt(category, Modifier.size(151.dp).graphicsLayer { alpha = pulse })
+                    if (category != 0) HudText(HudNavNames[category] + "    %02d".format(category + 1), 12, color = Muted)
                 }
                 HudText("%02d".format(selectedIndex + 1), 28, color = Muted, modifier = Modifier.offset(318.dp, 440.dp))
                 items.forEachIndexed { index, entry ->
@@ -188,7 +196,7 @@ internal fun ReferenceHud(
                 }
                 HudDetailPanel(category, current, tab, { tab = it }, contextItems, onToggleContext, onOpenVault,
                     menu, { menu = it }, Modifier.offset(28.dp, 765.dp))
-                HudCarousel(items, carouselStart, { carouselStart = (carouselStart + it + items.size) % items.size },
+                HudCarousel(carouselItems, carouselStart, { carouselStart = (carouselStart + it + carouselItems.size) % carouselItems.size },
                     onSelect, Modifier.offset(40.dp, 1098.dp))
             } else {
                 Box(Modifier.offset(207.dp, 265.dp).size(466.dp, 909.dp).clip(RoundedCornerShape(16.dp))
@@ -292,19 +300,22 @@ private fun HudStats(category: Int, contextCount: Int) {
 
 @Composable
 private fun HudOrbitCard(entry: HudItem, index: Int, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
-    Column(modifier.size(143.dp, 128.dp)
+    Box(modifier.size(143.dp, 128.dp)
         .graphicsLayer { shadowElevation = if (selected) 28.dp.toPx() else 8.dp.toPx(); ambientShadowColor = if (selected) Ice else Color.Black; spotShadowColor = if (selected) Ice else Color.Black }
         .clip(RoundedCornerShape(9.dp)).background(if (selected) Color(0xF00D1634) else Color(0xD907101F))
         .border(if (selected) 2.dp else 1.4.dp, if (selected) Ice else Color(0xFF7D8794).copy(alpha = .62f), RoundedCornerShape(9.dp))
         .clickable(onClick = onSelect).testTag("orbit-${entry.objectRef.title}")) {
+      HudCrop("card-frame.png", 13, 66, 1298, 1050, Modifier.fillMaxSize(), ContentScale.FillBounds)
+      Column(Modifier.fillMaxSize().padding(start = 5.dp, bottom = 4.dp)) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Icon(Icons.Outlined.RadioButtonUnchecked, null, tint = Muted, modifier = Modifier.size(9.dp))
             HudText("%02d".format(index + 1), 9, color = Muted)
         }
         HudItemArt(entry, Modifier.size(62.dp).align(Alignment.CenterHorizontally))
-        HudText(entry.objectRef.title, 12, weight = FontWeight.Bold,
+        HudText(entry.objectRef.title, 13, weight = FontWeight.Bold,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp), maxLines = 1)
-        HudText(shortSub(entry), 9, color = Muted, modifier = Modifier.padding(start = 10.dp, top = 3.dp), maxLines = 1)
+        HudText(shortSub(entry), 10, color = Muted, modifier = Modifier.padding(start = 10.dp, top = 3.dp), maxLines = 1)
+      }
     }
 }
 
@@ -321,9 +332,9 @@ private fun HudDetailPanel(category: Int, entry: HudItem, tab: String, onTab: (S
                            contextItems: Set<String>, onToggleContext: (Orb) -> Unit, onOpenVault: () -> Unit,
                            menu: Boolean, onMenu: (Boolean) -> Unit, modifier: Modifier) {
     val inContext = entry.objectRef.title in contextItems
-    Column(modifier.size(644.dp, 419.dp).graphicsLayer { shadowElevation = 18.dp.toPx(); ambientShadowColor = Ice; spotShadowColor = Ice }
+    Column(modifier.size(636.dp, 419.dp).graphicsLayer { shadowElevation = 18.dp.toPx(); ambientShadowColor = Ice; spotShadowColor = Ice }
         .clip(RoundedCornerShape(18.dp)).background(Glass)
-        .border(1.3.dp, Ice.copy(alpha = .43f), RoundedCornerShape(18.dp)).padding(15.dp)) {
+        .border(1.3.dp, Ice.copy(alpha = .55f), RoundedCornerShape(18.dp)).padding(24.dp)) {
         Row(Modifier.fillMaxWidth().height(307.dp), horizontalArrangement = Arrangement.spacedBy(13.dp)) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -333,27 +344,28 @@ private fun HudDetailPanel(category: Int, entry: HudItem, tab: String, onTab: (S
                 }
                 Row(Modifier.fillMaxWidth().height(92.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        HudText(entry.objectRef.title, if (entry.objectRef.title.length > 15) 26 else 31,
+                        HudText(entry.objectRef.title, if (entry.objectRef.title.length > 15) 29 else 31,
                             weight = FontWeight.Bold, modifier = Modifier.testTag("detail-title"), maxLines = 1)
                         HudText(entry.objectRef.sub, 15, color = Muted, modifier = Modifier.padding(top = 5.dp), maxLines = 2)
                     }
-                    HudItemArt(entry, Modifier.size(77.dp))
+                    if (entry == HudItems[category].first()) HudDetailArt(category, Modifier.size(77.dp))
+                    else HudItemArt(entry, Modifier.size(77.dp))
                 }
                 Row(Modifier.fillMaxWidth().height(33.dp).border(.6.dp, Edge, RoundedCornerShape(4.dp)),
                     horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     entry.tabs.forEach { name ->
-                        Column(Modifier.width(IntrinsicSize.Min).clickable { onTab(name) }.padding(horizontal = 5.dp, vertical = 6.dp).testTag("tab-$name")) {
-                            HudText(name, 9, color = if (tab == name) White else Muted, weight = FontWeight.Bold)
+                        Column(Modifier.width(IntrinsicSize.Min).clickable { onTab(name) }.padding(horizontal = 2.dp, vertical = 6.dp).testTag("tab-$name")) {
+                            HudText(name, 11, color = if (tab == name) White else Muted, weight = FontWeight.Bold)
                             if (tab == name) Box(Modifier.padding(top = 4.dp).fillMaxWidth().height(1.5.dp).background(Ice))
                         }
                     }
                 }
-                Box(Modifier.fillMaxWidth().height(85.dp).padding(top = 13.dp)) {
+                Box(Modifier.fillMaxWidth().height(75.dp).padding(top = 13.dp)) {
                     HudTabBody(category, entry, tab, contextItems, onOpenVault)
                 }
                 Row(Modifier.fillMaxWidth().height(32.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     entry.tags.forEach { tag ->
-                        HudText(tag, 10, color = if (tag == "ACTIVE") Ready else Muted, weight = FontWeight.Bold,
+                        HudText(tag, 11, color = if (tag == "ACTIVE") Ready else Muted, weight = FontWeight.Bold,
                             modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (tag == "ACTIVE") Color(0x99306655) else Color(0xFF132637))
                                 .border(1.dp, if (tag == "ACTIVE") Ready.copy(alpha = .4f) else Edge, RoundedCornerShape(7.dp))
                                 .padding(horizontal = 7.dp, vertical = 4.dp))
@@ -361,7 +373,7 @@ private fun HudDetailPanel(category: Int, entry: HudItem, tab: String, onTab: (S
                 }
                 Row(Modifier.fillMaxWidth().height(42.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                     Box(Modifier.weight(1f).fillMaxHeight().graphicsLayer { shadowElevation = 13.dp.toPx(); ambientShadowColor = Ice; spotShadowColor = Ice }
-                        .clip(RoundedCornerShape(7.dp)).background(if (inContext) Color(0xFF164D53) else Color(0xFF086B8A))
+                        .clip(RoundedCornerShape(7.dp)).background(if (inContext) Color(0xFF164D53) else Color(0xFF099FC9))
                         .border(1.5.dp, Ice.copy(alpha = .8f), RoundedCornerShape(7.dp))
                         .clickable { if (category == 1) onTab("FILES") else onToggleContext(entry.objectRef) }
                         .testTag("primary-action"), contentAlignment = Alignment.Center) {
@@ -389,7 +401,7 @@ private fun HudDetailPanel(category: Int, entry: HudItem, tab: String, onTab: (S
                     } else HudItemArt(entry, Modifier.size(113.dp).align(Alignment.Center))
                 }
                 Spacer(Modifier.height(12.dp))
-                Column(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(9.dp)).border(1.dp, Edge, RoundedCornerShape(9.dp)).padding(13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(9.dp)).border(1.dp, Edge, RoundedCornerShape(9.dp)).padding(13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     HudText(listOf("PERFORMANCE", "PROJECT", "CONNECTION", "KNOWLEDGE")[category], 10, color = Muted, weight = FontWeight.Bold)
                     entry.metrics.forEach { (label, value) ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -426,7 +438,7 @@ private fun HudTabBody(category: Int, entry: HudItem, tab: String, contextItems:
             else -> "Related objects are available in the carousel below. Select one to inspect its workspace context."
         }
         Column {
-            HudText(copy, 12, color = White.copy(alpha = .85f), lineHeight = 17, maxLines = if (tab == "FILES") 2 else 4)
+            HudText(copy, 13, color = White.copy(alpha = .85f), lineHeight = 18, maxLines = if (tab == "FILES") 2 else 3)
             if (tab == "FILES") TextButton(onOpenVault, contentPadding = PaddingValues(0.dp), modifier = Modifier.height(30.dp)) {
                 HudText("OPEN PROJECT VAULT  →", 11, color = Ice)
             }
@@ -442,7 +454,7 @@ private fun HudCarousel(items: List<HudItem>, start: Int, onScroll: (Int) -> Uni
             val entry = items[(start + index) % items.size]
             Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp)).background(Color(0xDA091625))
                 .border(1.dp, Edge, RoundedCornerShape(8.dp)).clickable { onSelect(entry.objectRef) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                HudItemArt(entry, Modifier.size(53.dp))
+                HudThumbnail(entry, Modifier.fillMaxWidth().height(53.dp))
                 HudText(entry.objectRef.title, 10, weight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(horizontal = 3.dp))
             }
         }
@@ -475,6 +487,59 @@ private fun HudItemArt(entry: HudItem, modifier: Modifier) {
     else Icon(entry.objectRef.icon, null, tint = if (entry.objectRef.title == "Relationships") Color(0xFFFF638C) else Violet, modifier = modifier.padding(8.dp))
 }
 
+/** Keep the supplied artwork's proportions while leaving its surrounding labels native. */
+@Composable
+private fun HudHubArt(category: Int, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        when (category) {
+            0 -> HudRegion("reference-models.jpg", 342, 430, 122, 127, Modifier.fillMaxSize(.82f))
+            1 -> HudRegion("reference-projects.jpg", 371, 449, 74, 54, Modifier.fillMaxWidth(.50f).fillMaxHeight(.39f))
+            2 -> HudRegion("reference-connectors.jpg", 398, 471, 105, 72, Modifier.fillMaxWidth(.70f).fillMaxHeight(.48f))
+            else -> HudRegion("reference-knowledge.jpg", 410, 467, 80, 78, Modifier.fillMaxSize(.57f))
+        }
+    }
+}
+
+@Composable
+private fun HudDetailArt(category: Int, modifier: Modifier) {
+    when (category) {
+        0 -> HudRegion("reference-models.jpg", 321, 787, 77, 88, modifier)
+        1 -> HudRegion("reference-projects.jpg", 323, 738, 65, 61, modifier)
+        2 -> HudRegion("reference-connectors.jpg", 307, 801, 91, 90, modifier)
+        else -> HudRegion("reference-knowledge.jpg", 325, 796, 82, 92, modifier)
+    }
+}
+
+@Composable
+private fun HudThumbnail(entry: HudItem, modifier: Modifier) {
+    val crop = when (entry.objectRef.title) {
+        "Qwen 3.5 2B" -> listOf(0, 53, 1095, 113, 55)
+        "Gemma 4 2B" -> listOf(0, 175, 1095, 112, 55)
+        "Llama 3.2 3B" -> listOf(0, 298, 1095, 111, 55)
+        "Mixtral 8x7B" -> listOf(0, 420, 1095, 109, 55)
+        "Claude 3.5" -> listOf(0, 541, 1095, 106, 55)
+        "NeverSoft" -> listOf(1, 57, 1027, 109, 53)
+        "File Organizer" -> listOf(1, 180, 1027, 103, 53)
+        "OSINT Tools" -> listOf(1, 301, 1027, 108, 53)
+        "MicroPPT" -> listOf(1, 421, 1027, 102, 53)
+        "Veras" -> listOf(1, 539, 1027, 94, 53)
+        "Google Drive" -> listOf(2, 72, 1117, 109, 54)
+        "Dropbox" -> listOf(2, 197, 1117, 111, 54)
+        "Browser" -> listOf(2, 328, 1117, 107, 54)
+        "Termux" -> listOf(2, 453, 1117, 108, 54)
+        "Telegram" -> listOf(2, 578, 1117, 108, 54)
+        "Personal Notes" -> listOf(3, 73, 1109, 109, 53)
+        "Music Knowledge" -> listOf(3, 198, 1109, 111, 53)
+        "OSINT Database" -> listOf(3, 326, 1109, 107, 53)
+        "Relationships" -> listOf(3, 458, 1109, 105, 53)
+        "Device Data" -> listOf(3, 591, 1109, 103, 53)
+        else -> null
+    }
+    if (crop == null) HudItemArt(entry, modifier)
+    else HudCrop("reference-${listOf("models", "projects", "connectors", "knowledge")[crop[0]]}.jpg",
+        crop[1], crop[2], crop[3], crop[4], modifier)
+}
+
 @Composable
 private fun hudBitmap(path: String): ImageBitmap {
     val context = LocalContext.current
@@ -499,14 +564,27 @@ private fun HudSprite(path: String, cell: Int, columns: Int, modifier: Modifier)
     val bitmap = hudBitmap(path)
     val cellWidth = bitmap.width / columns
     val cellHeight = bitmap.height / columns
-    Image(BitmapPainter(bitmap, IntOffset((cell % columns) * cellWidth, (cell / columns) * cellHeight), IntSize(cellWidth, cellHeight)),
-        null, modifier, contentScale = ContentScale.Fit)
+    Canvas(modifier) {
+        drawImage(bitmap, srcOffset = IntOffset((cell % columns) * cellWidth, (cell / columns) * cellHeight),
+            srcSize = IntSize(cellWidth, cellHeight), dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+            blendMode = BlendMode.Screen, filterQuality = FilterQuality.High)
+    }
+}
+
+@Composable
+private fun HudRegion(path: String, x: Int, y: Int, width: Int, height: Int, modifier: Modifier) {
+    val bitmap = hudBitmap(path)
+    Canvas(modifier) {
+        drawImage(bitmap, srcOffset = IntOffset(x, y), srcSize = IntSize(width, height),
+            dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+            blendMode = BlendMode.Screen, filterQuality = FilterQuality.High)
+    }
 }
 
 /** Reuse supplied brand and detail artwork; all UI remains native, selectable text and controls. */
 @Composable
-private fun HudCrop(path: String, x: Int, y: Int, width: Int, height: Int, modifier: Modifier) {
-    Image(BitmapPainter(hudBitmap(path), IntOffset(x, y), IntSize(width, height)), null, modifier, contentScale = ContentScale.Crop)
+private fun HudCrop(path: String, x: Int, y: Int, width: Int, height: Int, modifier: Modifier, contentScale: ContentScale = ContentScale.Crop) {
+    Image(BitmapPainter(hudBitmap(path), IntOffset(x, y), IntSize(width, height)), null, modifier, contentScale = contentScale)
 }
 
 @Composable
