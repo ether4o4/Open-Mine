@@ -22,6 +22,8 @@ gradle :app:assembleDebug
 GitHub Actions compiles the app, creates a debug APK, and runs device tests for
 navigation, selection and context persistence, vault access, and settings. The
 `Open-Mine-HUD-verification` artifact includes screenshots of all four main views.
+The source/native comparison images and visual limitations are documented in
+[design-qa.md](design-qa.md).
 
 The bundled Ubuntu fonts are distributed under the Ubuntu Font Licence; see
 `app/src/main/assets/hud/FONT-LICENSE.txt`. Supplied reference images provide the

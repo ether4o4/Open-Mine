@@ -5,5 +5,5 @@ app/build/
 local.properties
 .idea/
 *.iml
-qa/*.b64
-qa/*.zip
+*.apk
+qa/
