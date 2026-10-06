@@ -64,8 +64,8 @@ class HudInteractionTest {
         compose.waitForIdle()
         val directory = compose.activity.getExternalFilesDir(Environment.DIRECTORY_PICTURES)!!
         directory.mkdirs()
-        File(directory, "$name.png").outputStream().use {
-            compose.onNodeWithTag("hud-root").captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
-        }
+        val bitmap = compose.onNodeWithTag("hud-root").captureToImage().asAndroidBitmap()
+        File(directory, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File(directory, "$name.jpg").outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
     }
 }
