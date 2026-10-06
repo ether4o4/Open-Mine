@@ -45,7 +45,7 @@ class MainActivity:ComponentActivity(){
  var vaultOpen by remember{mutableStateOf(false)}
  fun selectObject(o:Orb){active=o.title;p.edit().putString("active_$selected",o.title).apply()}
  fun toggleContext(o:Orb){contextItems=if(o.title in contextItems)contextItems-o.title else contextItems+o.title;p.edit().putStringSet("context",contextItems).apply()}
- fun go(i:Int){selected=i.coerceIn(0,11);active=p.getString("active_$selected","") ?: "";p.edit().putInt("screen",selected).apply();if(haptics)(c as? android.app.Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)}
+ fun go(i:Int){selected=i.coerceIn(0,11);active=p.getString("active_$selected",if(selected==0)p.getString("active","")else "") ?: "";p.edit().putInt("screen",selected).apply();if(haptics)(c as? android.app.Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)}
  MaterialTheme(colorScheme=darkColorScheme(background=BG,surface=PANEL,primary=CYAN,secondary=PURPLE)){
   ReferenceHud(selected,animations,active,contextItems,::go,::selectObject,::toggleContext,{vaultOpen=true}){screen->
    when(screen){
@@ -161,4 +161,3 @@ class MainActivity:ComponentActivity(){
 
 @Composable fun SettingsScreen(a:Boolean,setA:(Boolean)->Unit,h:Boolean,setH:(Boolean)->Unit){Column(Modifier.fillMaxSize().padding(15.dp)){Text("SETTINGS",color=MAIN,fontSize=25.sp,fontWeight=FontWeight.Bold);Text("Open Mine workspace configuration",color=DIM,fontSize=10.sp);Spacer(Modifier.height(14.dp));Setting("Animations","Orbital motion and interface transitions",a,setA);Setting("Haptic feedback","Touch confirmation for navigation",h,setH);Setting("Proven knowledge only","Prefer verified vault entries for context",true,{})}}
 @Composable fun Setting(t:String,s:String,v:Boolean,on:(Boolean)->Unit){Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),color=PANEL,shape=RoundedCornerShape(12.dp)){Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(t,color=MAIN,fontSize=12.sp);Text(s,color=DIM,fontSize=8.sp)};Switch(v,on)}}}
-

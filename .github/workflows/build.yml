@@ -88,10 +88,3 @@ jobs:
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
           if-no-files-found: warn
-      - name: Export visual review evidence
-        run: |
-          for view in models projects connectors knowledge; do
-            printf 'HUD_EVIDENCE_START %s\n' "$view"
-            base64 "hud-screenshots/hud-$view.jpg"
-            printf 'HUD_EVIDENCE_END\n'
-          done

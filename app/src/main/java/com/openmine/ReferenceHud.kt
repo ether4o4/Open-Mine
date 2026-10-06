@@ -49,6 +49,13 @@ private val HudFont = FontFamily(
     Font(R.font.ubuntu_medium, FontWeight.Medium),
     Font(R.font.ubuntu_bold, FontWeight.Bold)
 )
+// Dark atlas pixels contribute little opacity; bright artwork keeps its full color.
+private val ArtworkAlpha = ColorFilter.colorMatrix(ColorMatrix(floatArrayOf(
+    1f, 0f, 0f, 0f, 0f,
+    0f, 1f, 0f, 0f, 0f,
+    0f, 0f, 1f, 0f, 0f,
+    .75f, .75f, .75f, 0f, 0f
+)))
 
 internal data class HudItem(
     val objectRef: Orb,
@@ -74,7 +81,7 @@ private val KnowledgeTabs = listOf("OVERVIEW", "DOCUMENTS", "CHUNKS", "CONTEXT",
 internal val HudItems: List<List<HudItem>> = listOf(
     listOf(
         item("Qwen 3.5 2B", "Abliterated · GGUF · Local", 0, Icons.Outlined.Memory,
-            "Lightweight, fast, and reliable local model optimized for reasoning, coding, and tool use. On-device loaded and ready for workspace tasks.",
+            "Lightweight, fast, and reliable local model optimized for reasoning, coding, and tool use. Quantized for on-device workspace tasks.",
             listOf("LOCAL", "GGUF", "2B", "Q4_K_M", "TOOL CALLING"),
             listOf("Context Window" to "32K", "RAM Usage" to "2.1 GB", "Quantization" to "Q4_K_M", "Status" to "Ready"), ModelTabs),
         item("Gemma 4 2B", "LITE RT · ANDROID", 1, Icons.Outlined.Memory,
@@ -102,8 +109,9 @@ internal val HudItems: List<List<HudItem>> = listOf(
         item("File Organizer", "Utilities", -1, Icons.Outlined.Folder, "File organization project and utility context.", listOf("FILES", "UTILITY"), listOf("Type" to "Utility", "Status" to "Available"), ProjectTabs, 1),
         item("OSINT Tools", "Research Tools", 5, Icons.Outlined.Search, "Open-source research workflows and tool context.", listOf("OSINT", "RESEARCH"), listOf("Type" to "Research", "Status" to "Available"), ProjectTabs),
         item("MicroPPT", "Slide Builder", 8, Icons.Outlined.Slideshow, "Presentation and slide-building project context.", listOf("SLIDES", "BUILD"), listOf("Type" to "Presentation", "Status" to "Available"), ProjectTabs),
-        item("Veras", "Creative", -1, Icons.Outlined.Favorite, "Creative project context for the workspace.", listOf("CREATIVE", "PROJECT"), listOf("Status" to "Available"), ProjectTabs),
         item("MVE", "Kernel", -1, Icons.Outlined.Terminal, "Kernel and terminal project context.", listOf("KERNEL", "TERMINAL"), listOf("Status" to "Available"), ProjectTabs),
+        item("Veras", "Creative", -1, Icons.Outlined.Favorite, "Creative project context for the workspace.", listOf("CREATIVE", "PROJECT"), listOf("Status" to "Available"), ProjectTabs),
+        item("GhostGPT", "Chat Project", -1, Icons.Outlined.Chat, "Chat project and reusable assistant context.", listOf("CHAT", "PROJECT"), listOf("Status" to "Available"), ProjectTabs),
         item("Ghost Key", "File Explorer", 4, Icons.Outlined.Key, "File explorer project and workspace context.", listOf("FILES", "EXPLORER"), listOf("Status" to "Available"), ProjectTabs)
     ),
     listOf(
@@ -114,7 +122,8 @@ internal val HudItems: List<List<HudItem>> = listOf(
         item("Browser", "Web Automation", 13, Icons.Outlined.Language, "Web research and automation connector context.", listOf("WEB", "BROWSER"), listOf("Status" to "Not configured"), ConnectorTabs),
         item("Termux", "Command Tools", -1, Icons.Outlined.Terminal, "Android terminal and command tool connector context.", listOf("ANDROID", "TERMINAL"), listOf("Status" to "Not configured"), ConnectorTabs),
         item("Telegram", "Messaging", 14, Icons.Outlined.Send, "Messaging connector configuration for workspace workflows.", listOf("MESSAGING", "TELEGRAM"), listOf("Status" to "Not configured"), ConnectorTabs),
-        item("Notion", "Docs & Notes", 12, Icons.Outlined.Description, "Document and note connector configuration.", listOf("DOCS", "NOTES", "NOTION"), listOf("Status" to "Not configured"), ConnectorTabs)
+        item("Notion", "Docs & Notes", 12, Icons.Outlined.Description, "Document and note connector configuration.", listOf("DOCS", "NOTES", "NOTION"), listOf("Status" to "Not configured"), ConnectorTabs),
+        item("Notion Key", "Docs & Notes", 12, Icons.Outlined.Description, "Reusable document connector credentials and permissions context.", listOf("DOCS", "NOTES", "NOTION"), listOf("Status" to "Not configured"), ConnectorTabs)
     ),
     listOf(
         item("Engineering Vault", "Project Specs & Documentation", 15, Icons.Outlined.Storage,
@@ -124,7 +133,8 @@ internal val HudItems: List<List<HudItem>> = listOf(
         item("OSINT Database", "Links & Methods", 13, Icons.Outlined.Language, "Research sources, links, and open-source investigation methods.", listOf("OSINT", "LINKS", "RESEARCH"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs),
         item("Relationships", "People & Connections", -1, Icons.Outlined.Favorite, "Relationships and connected knowledge context.", listOf("PEOPLE", "CONNECTIONS"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs),
         item("Device Data", "Device Information", -1, Icons.Outlined.PhoneAndroid, "Device information and workspace configuration context.", listOf("DEVICE", "ANDROID"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs),
-        item("Work Knowledge", "Tools & Methods", 9, Icons.Outlined.Build, "Reusable work methods and tool documentation.", listOf("WORK", "METHODS"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs)
+        item("Work Knowledge", "Tools & Methods", -1, Icons.Outlined.Build, "Reusable work methods and tool documentation.", listOf("WORK", "METHODS"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs),
+        item("Work Methods", "Code & Methods", 9, Icons.Outlined.Code, "Repository references and reusable development methods.", listOf("WORK", "CODE"), listOf("Storage" to "Local", "Status" to "Ready"), KnowledgeTabs)
     )
 )
 
@@ -171,7 +181,11 @@ internal fun ReferenceHud(
     } else 1f
     var tab by remember(screen, current.objectRef.title) { mutableStateOf("OVERVIEW") }
     var menu by remember(screen, current.objectRef.title) { mutableStateOf(false) }
-    val carouselItems = if (category == 0) listOf(0, 1, 2, 8, 6, 3, 4, 5, 7).map { items[it] } else items
+    val carouselItems = when (category) {
+        0 -> listOf(0, 1, 2, 8, 6, 3, 4, 5, 7).map { items[it] }
+        1 -> listOf(0, 1, 2, 3, 4, 6, 5, 7, 8).map { items[it] }
+        else -> items
+    }
     var carouselStart by remember(screen) { mutableIntStateOf(if (category == 0) 0 else 1) }
 
     Box(Modifier.fillMaxSize().background(Ink).testTag("hud-root")) {
@@ -182,12 +196,15 @@ internal fun ReferenceHud(
             HudLocation()
             HudStats(category, contextItems.size)
             if (screen < 4) {
-                Column(Modifier.offset(315.dp, 413.dp).size(195.dp, 190.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    HudText(HudNavNames[category], 14, weight = FontWeight.Bold)
-                    HudHubArt(category, Modifier.size(151.dp).graphicsLayer { alpha = pulse })
-                    if (category != 0) HudText(HudNavNames[category] + "    %02d".format(category + 1), 12, color = Muted)
+                Box(Modifier.offset(315.dp, 413.dp).size(195.dp, 190.dp)) {
+                    HudText(HudNavNames[category], 14, weight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.TopCenter).offset(y = if (category == 0) 0.dp else 30.dp))
+                    HudHubArt(category, Modifier.size(if (category == 0) 151.dp else 127.dp)
+                        .align(Alignment.TopCenter).offset(y = if (category == 0) 17.dp else 35.dp).graphicsLayer { alpha = pulse })
+                    if (category != 0) HudText(HudNavNames[category] + "    %02d".format(category + 1), 12, color = White,
+                        modifier = Modifier.align(Alignment.TopCenter).offset(y = 148.dp))
                 }
-                HudText("%02d".format(selectedIndex + 1), 28, color = Muted, modifier = Modifier.offset(318.dp, 440.dp))
+                HudText("%02d".format(selectedIndex + 1), 28, color = Muted, modifier = Modifier.offset(318.dp, if (category == 0) 440.dp else 452.dp))
                 items.forEachIndexed { index, entry ->
                     val position = positions(items.size)[index]
                     HudOrbitCard(entry, index, current == entry,
@@ -211,9 +228,9 @@ private fun positions(count: Int): List<Triple<Int, Int, Float>> = when (count) 
     9 -> listOf(Triple(243, 213, -16f), Triple(421, 237, 14f), Triple(539, 323, 29f),
         Triple(544, 477, 12f), Triple(488, 596, 31f), Triple(343, 641, -1f),
         Triple(209, 593, 30f), Triple(163, 478, -10f), Triple(163, 342, 17f))
-    8 -> listOf(Triple(239, 210, -16f), Triple(420, 225, 14f), Triple(538, 322, 31f),
-        Triple(545, 469, 12f), Triple(497, 596, 32f), Triple(352, 631, -1f),
-        Triple(222, 594, 30f), Triple(167, 451, -11f))
+    8 -> listOf(Triple(242, 218, -16f), Triple(423, 242, 14f), Triple(539, 332, 28f),
+        Triple(545, 491, 12f), Triple(488, 621, 33f), Triple(306, 639, 24f),
+        Triple(165, 511, -11f), Triple(165, 376, 12f))
     else -> listOf(Triple(242, 218, -16f), Triple(423, 242, 14f), Triple(539, 332, 28f),
         Triple(545, 491, 12f), Triple(488, 621, 33f), Triple(306, 639, 24f), Triple(165, 376, 12f))
 }
@@ -280,10 +297,10 @@ private fun HudLocation() {
 @Composable
 private fun HudStats(category: Int, contextCount: Int) {
     val metrics = when (category) {
-        0 -> listOf("MODELS" to "9", "PROJECTS" to "8", "CONNECTORS" to "7", "IN CONTEXT" to "$contextCount")
-        1 -> listOf("PROJECTS" to "8", "FORMAT" to "V1", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
-        2 -> listOf("AVAILABLE" to "7", "PROTOCOL" to "MCP", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
-        else -> listOf("SOURCES" to "7", "FORMAT" to "V1", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
+        0 -> listOf("MODELS" to "${HudItems[0].size}", "PROJECTS" to "${HudItems[1].size}", "CONNECTORS" to "${HudItems[2].size}", "IN CONTEXT" to "$contextCount")
+        1 -> listOf("PROJECTS" to "${HudItems[1].size}", "FORMAT" to "V1", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
+        2 -> listOf("AVAILABLE" to "${HudItems[2].size}", "PROTOCOL" to "MCP", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
+        else -> listOf("SOURCES" to "${HudItems[3].size}", "FORMAT" to "V1", "STORAGE" to "LOCAL", "IN CONTEXT" to "$contextCount")
     }
     Column(Modifier.offset(521.dp, 89.dp).size(151.dp, 152.dp).clip(RoundedCornerShape(8.dp)).background(Glass.copy(alpha = .65f))
         .border(.7.dp, Edge.copy(alpha = .6f), RoundedCornerShape(8.dp)).padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -373,7 +390,9 @@ private fun HudDetailPanel(category: Int, entry: HudItem, tab: String, onTab: (S
                 }
                 Row(Modifier.fillMaxWidth().height(42.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                     Box(Modifier.weight(1f).fillMaxHeight().graphicsLayer { shadowElevation = 13.dp.toPx(); ambientShadowColor = Ice; spotShadowColor = Ice }
-                        .clip(RoundedCornerShape(7.dp)).background(if (inContext) Color(0xFF164D53) else Color(0xFF099FC9))
+                        .clip(RoundedCornerShape(7.dp)).background(Brush.verticalGradient(
+                            if (inContext) listOf(Color(0xFF287E87), Color(0xFF164D53))
+                            else listOf(Color(0xFF28BDEA), Color(0xFF058AB6), Color(0xFF0CA9D5))))
                         .border(1.5.dp, Ice.copy(alpha = .8f), RoundedCornerShape(7.dp))
                         .clickable { if (category == 1) onTab("FILES") else onToggleContext(entry.objectRef) }
                         .testTag("primary-action"), contentAlignment = Alignment.Center) {
@@ -455,7 +474,7 @@ private fun HudCarousel(items: List<HudItem>, start: Int, onScroll: (Int) -> Uni
             Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp)).background(Color(0xDA091625))
                 .border(1.dp, Edge, RoundedCornerShape(8.dp)).clickable { onSelect(entry.objectRef) }, horizontalAlignment = Alignment.CenterHorizontally) {
                 HudThumbnail(entry, Modifier.fillMaxWidth().height(53.dp))
-                HudText(entry.objectRef.title, 10, weight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(horizontal = 3.dp))
+                HudText(entry.objectRef.title, 11, weight = FontWeight.Bold, maxLines = 1, modifier = Modifier.padding(horizontal = 3.dp))
             }
         }
         Icon(Icons.Outlined.ChevronRight, "Next objects", tint = White, modifier = Modifier.size(20.dp, 52.dp).clickable { onScroll(1) })
@@ -482,7 +501,20 @@ private fun HudDock(selected: Int, onSelect: (Int) -> Unit) {
 
 @Composable
 private fun HudItemArt(entry: HudItem, modifier: Modifier) {
-    if (entry.art >= 0) HudSprite("cards.png", entry.art, 4, modifier)
+    val source = when (entry.objectRef.title) {
+        "Ghost Key" -> listOf(1, 195, 369, 54, 52, -15)
+        "GhostGPT" -> listOf(1, 203, 507, 42, 40, 13)
+        "MVE" -> listOf(1, 386, 632, 51, 47, 1)
+        "Notion" -> listOf(2, 235, 526, 55, 51, 13)
+        "Work Knowledge" -> listOf(3, 241, 521, 57, 49, 14)
+        else -> null
+    }
+    if (source != null) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            HudRegion("reference-${listOf("models", "projects", "connectors", "knowledge")[source[0]]}.jpg",
+                source[1], source[2], source[3], source[4], Modifier.fillMaxSize(.76f).graphicsLayer { rotationZ = source[5].toFloat() })
+        }
+    } else if (entry.art >= 0) HudSprite("cards.png", entry.art, 4, modifier)
     else if (entry.hubArt >= 0) HudSprite("hubs.png", entry.hubArt, 2, modifier)
     else Icon(entry.objectRef.icon, null, tint = if (entry.objectRef.title == "Relationships") Color(0xFFFF638C) else Violet, modifier = modifier.padding(8.dp))
 }
@@ -493,8 +525,8 @@ private fun HudHubArt(category: Int, modifier: Modifier) {
     Box(modifier, contentAlignment = Alignment.Center) {
         when (category) {
             0 -> HudRegion("reference-models.jpg", 342, 430, 122, 127, Modifier.fillMaxSize(.82f))
-            1 -> HudRegion("reference-projects.jpg", 371, 449, 74, 54, Modifier.fillMaxWidth(.50f).fillMaxHeight(.39f))
-            2 -> HudRegion("reference-connectors.jpg", 398, 471, 105, 72, Modifier.fillMaxWidth(.70f).fillMaxHeight(.48f))
+            1 -> HudRegion("reference-projects.jpg", 371, 449, 74, 54, Modifier.fillMaxWidth(.56f).fillMaxHeight(.46f))
+            2 -> HudRegion("reference-connectors.jpg", 398, 471, 105, 72, Modifier.fillMaxWidth(.78f).fillMaxHeight(.55f))
             else -> HudRegion("reference-knowledge.jpg", 410, 467, 80, 78, Modifier.fillMaxSize(.57f))
         }
     }
@@ -513,11 +545,11 @@ private fun HudDetailArt(category: Int, modifier: Modifier) {
 @Composable
 private fun HudThumbnail(entry: HudItem, modifier: Modifier) {
     val crop = when (entry.objectRef.title) {
-        "Qwen 3.5 2B" -> listOf(0, 53, 1095, 113, 55)
-        "Gemma 4 2B" -> listOf(0, 175, 1095, 112, 55)
-        "Llama 3.2 3B" -> listOf(0, 298, 1095, 111, 55)
-        "Mixtral 8x7B" -> listOf(0, 420, 1095, 109, 55)
-        "Claude 3.5" -> listOf(0, 541, 1095, 106, 55)
+        "Qwen 3.5 2B" -> listOf(0, 53, 1095, 113, 48)
+        "Gemma 4 2B" -> listOf(0, 175, 1095, 112, 48)
+        "Llama 3.2 3B" -> listOf(0, 298, 1095, 111, 48)
+        "Mixtral 8x7B" -> listOf(0, 420, 1095, 109, 48)
+        "Claude 3.5" -> listOf(0, 541, 1095, 106, 48)
         "NeverSoft" -> listOf(1, 57, 1027, 109, 53)
         "File Organizer" -> listOf(1, 180, 1027, 103, 53)
         "OSINT Tools" -> listOf(1, 301, 1027, 108, 53)
@@ -567,7 +599,7 @@ private fun HudSprite(path: String, cell: Int, columns: Int, modifier: Modifier)
     Canvas(modifier) {
         drawImage(bitmap, srcOffset = IntOffset((cell % columns) * cellWidth, (cell / columns) * cellHeight),
             srcSize = IntSize(cellWidth, cellHeight), dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-            blendMode = BlendMode.Screen, filterQuality = FilterQuality.High)
+            colorFilter = ArtworkAlpha, filterQuality = FilterQuality.High)
     }
 }
 
@@ -577,7 +609,7 @@ private fun HudRegion(path: String, x: Int, y: Int, width: Int, height: Int, mod
     Canvas(modifier) {
         drawImage(bitmap, srcOffset = IntOffset(x, y), srcSize = IntSize(width, height),
             dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-            blendMode = BlendMode.Screen, filterQuality = FilterQuality.High)
+            colorFilter = ArtworkAlpha, filterQuality = FilterQuality.High)
     }
 }
 
