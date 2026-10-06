@@ -491,8 +491,8 @@ private fun HudDock(selected: Int, onSelect: (Int) -> Unit) {
             }.clip(RoundedCornerShape(6.dp)).background(if (active) Color(0xEC103346) else Color(0xDF081422))
                 .border(if (active) 1.6.dp else .8.dp, if (active) Ice else Edge, RoundedCornerShape(6.dp))
                 .clickable { onSelect(index) }.testTag("dock-$index").padding(top = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (index < 4) HudSprite("hubs.png", index, 2, Modifier.size(45.dp))
-                else Icon(HudNavIcons[index], null, tint = if (active) Ice else Muted, modifier = Modifier.size(45.dp).padding(6.dp))
+                val dockX = listOf(46, 157, 262, 377, 484, 591)[index]
+                HudRegion("reference-models.jpg", dockX, 1204, 48, 46, Modifier.size(45.dp))
                 HudText(HudNavNames[index], 10, color = if (active) White else Muted, weight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
             }
         }
@@ -502,6 +502,15 @@ private fun HudDock(selected: Int, onSelect: (Int) -> Unit) {
 @Composable
 private fun HudItemArt(entry: HudItem, modifier: Modifier) {
     val source = when (entry.objectRef.title) {
+        "Qwen 3.5 2B" -> listOf(0, 262, 234, 58, 51, 16)
+        "NeverSoft" -> listOf(1, 441, 240, 61, 55, -14)
+        "MicroPPT" -> listOf(1, 526, 579, 55, 51, -31)
+        "Veras" -> listOf(1, 274, 612, 56, 49, -30)
+        "Engineering Vault" -> listOf(3, 281, 240, 69, 65, 16)
+        "Personal Notes" -> listOf(3, 483, 251, 53, 60, -14)
+        "Music Knowledge" -> listOf(3, 610, 337, 55, 60, -28)
+        "Relationships" -> listOf(3, 586, 614, 64, 56, -33)
+        "Device Data" -> listOf(3, 331, 637, 57, 58, -24)
         "Ghost Key" -> listOf(1, 195, 369, 54, 52, -15)
         "GhostGPT" -> listOf(1, 203, 507, 42, 40, 13)
         "MVE" -> listOf(1, 386, 632, 51, 47, 1)
