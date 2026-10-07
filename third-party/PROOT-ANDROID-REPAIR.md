@@ -6,6 +6,8 @@ The bundled executable identifies its source as `4dba3afb-dirty`. Upstream `src/
 
 The translation follows the [PRoot maintainer's proposal](https://github.com/termux/proot/issues/237#issuecomment-1178592429) and [reporter's successful test](https://github.com/termux/proot/issues/237#issuecomment-1181298046). Those reports support the diagnosis but do not replace Open Mine's actual Android runtime acceptance test.
 
+The auditable patch also supplies the missing `<string.h>` declarations for `strcmp`/`memset` required by modern C99 compilers. In the existing two-case `setresuid`/`setresgid` switch arm, an exhaustive `else` replaces the redundant second condition so the compiler can prove `ret` is assigned; it does not change either operation or permission check. Compiler errors/warnings are not disabled.
+
 ## Reproducible build
 
 On Linux, install Android NDK `27.2.12479018` and run before assembling the APK:

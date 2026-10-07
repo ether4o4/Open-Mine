@@ -21,3 +21,20 @@
  	case PR_access:
  		set_sysnum(tracee, PR_faccessat);
  		poke_reg(tracee, SYSARG_4, 0);
+@@ -541,7 +555,7 @@
+ 		sxid = peek_reg(tracee, CURRENT, SYSARG_3);
+ 		if (sysnum == PR_setresuid)
+ 			ret = getresuid(&rxid_, &exid_, &sxid_);
+-		else if (sysnum == PR_setresgid)
++		else /* This switch arm handles only setresuid and setresgid. */
+ 			ret = getresgid(&rxid_, &exid_, &sxid_);
+ 		if (ret) {  // EFAULT = address outside address space
+ 			set_result_after_seccomp(tracee, -EPERM);
+--- a/src/extension/ashmem_memfd/ashmem_memfd.c
++++ b/src/extension/ashmem_memfd/ashmem_memfd.c
+@@ -1,4 +1,5 @@
+ #include <stdlib.h>
++#include <string.h> /* strcmp, memset */
+ #include <signal.h>
+ #include <unistd.h>
+ #include <sys/syscall.h>  /* __NR_memfd_create,  */
