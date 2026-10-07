@@ -33,7 +33,8 @@ object ModelClient {
             .put("parameters",JSONObject().put("type","object").put("properties",JSONObject().put("query",JSONObject().put("type","string"))).put("required",JSONArray().put("query"))))
         val systemTool=JSONObject().put("type","function").put("function",JSONObject().put("name","linux_system_info").put("description","Run the fixed read-only uname command in Open Mine's Linux shell. No arbitrary command arguments are accepted.").put("parameters",JSONObject().put("type","object").put("properties",JSONObject())))
         repeat(3){round->
-            control.checkActive();onProgress("Connecting to model · round ${round+1}/3");onText("")
+            // Keep the last real text visible if a post-tool connection fails before its first token.
+            control.checkActive();onProgress("Connecting to model · round ${round+1}/3")
             val payload=JSONObject().put("model",model.trim()).put("messages",messages).put("stream",true).put("max_tokens",256)
             if(allowTools && round<2)payload.put("tools",JSONArray().put(tool).put(systemTool))
             val connection=uri.toURL().openConnection() as HttpURLConnection

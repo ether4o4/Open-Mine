@@ -23,7 +23,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Check out the exact source commit
         uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
         with:
           packages: 'platform-tools'
       - name: Install build SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0" "ndk;27.2.12479018"
       - name: Record source and run shell verification
         run: |
           mkdir -p verification
@@ -53,7 +53,12 @@ jobs:
           test ! -s verification/source-status.txt
           bash -n app/src/main/assets/sandbox/morsllm.sh
           python3 app/src/test/scripts/test_engine_lifecycle.py 2>&1 | tee verification/python-tests.txt
+      - name: Rebuild the affected PRoot ABI from pinned source and compatibility patch
+        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash scripts/build_proot_android.sh verification/native-build
       - name: Create the user-authorized new signing identity and encrypted backup
+        env:
+          OPEN_MINE_SIGNING_P12_BASE64: ${{ secrets.OPEN_MINE_SIGNING_P12_BASE64 }}
+          OPEN_MINE_RETAINED_SIGNING_PASSWORD: ${{ secrets.OPEN_MINE_RETAINED_SIGNING_PASSWORD }}
         run: bash scripts/create_signing_key.sh
       - name: Run final-source unit tests, lint, and build APKs
         run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
@@ -160,7 +165,7 @@ jobs:
       - name: Verify API35 HUD, accessibility, keyboard and project journeys
         uses: reactivecircus/android-emulator-runner@v2
         env:
-          OPENMINE_TEST_CLASSES: com.openmine.HudIntegrationTest,com.openmine.ProjectRuntimeTest
+          OPENMINE_TEST_CLASSES: com.openmine.HudIntegrationTest,com.openmine.ProjectRuntimeTest,com.openmine.SafWorkflowTest
         with:
           api-level: 35
           arch: x86_64

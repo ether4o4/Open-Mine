@@ -1,7 +1,10 @@
 package com.openmine
 
+import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
@@ -13,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -23,6 +27,8 @@ import java.util.UUID
 @RunWith(AndroidJUnit4::class)
 @LargeTest
 class NativeRuntimeTest {
+    @get:Rule val compose = createEmptyComposeRule()
+
     @Test(timeout = 900_000)
     fun actualAndroidShellSetupPersistenceCancellationAndRecovery() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -64,7 +70,7 @@ class NativeRuntimeTest {
             return runtime.output.value
         }
         try {
-            ActivityScenario.launch(MainActivity::class.java).use {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 idle()
                 val started = SystemClock.elapsedRealtime()
                 runtime.setup()
@@ -126,6 +132,65 @@ class NativeRuntimeTest {
                 runtime.verifyShell(); idle()
                 assertTrue(runtime.status.value, runtime.shellHealthy.value)
                 record("explicit_shell_reprobe", runtime.status.value)
+
+                val reviewedFile = File(base, "home/openmine-runtime-check-$nonce/reviewed.txt")
+                val reviewedCommand = "printf 'APPROVED_$nonce' > '$cwd/reviewed.txt'; printf 'TOOL_DONE_$nonce'"
+                val tool = OpenMineObjectFormat.template(
+                    type = "TOOL", title = "Runtime approval $nonce",
+                    summary = "Test-only procedure writes one nonce file after explicit review.", tags = "test, runtime",
+                    source = "Android native runtime integration test", purpose = "Verify user-reviewed tool execution",
+                    facts = "NONE", procedure = reviewedCommand, constraints = "Only this test-owned directory",
+                    examples = "NONE", keywords = "runtime, review", aliases = "NONE", triggers = "NONE",
+                    project = "NONE", model = "NONE", skill = "NONE", tool = "NONE", mission = "NONE",
+                    query = "runtime review", whenText = "Explicit Android test run", exclude = "NONE",
+                    verification = "DRAFT", verificationSource = "Android test", notes = "Not an inference assertion",
+                )
+                val preferences = context.getSharedPreferences("open_mine", Context.MODE_PRIVATE)
+                val originalRoute = preferences.getString("route", null)
+                val originalOpenedRecord = preferences.getString("opened_record", null)
+                var savedTool: StrictObject? = null
+                try {
+                    val saved = OpenMineObjectStore.create(context, tool)
+                    assertTrue(saved.errors.joinToString(), saved.valid)
+                    savedTool = saved.normalized!!
+                    assertFalse("Importing a tool must not execute it", reviewedFile.exists())
+                    preferences.edit().putString("route", "tool").putString("opened_record", savedTool.id).commit()
+                    scenario.recreate()
+                    compose.waitUntil(15_000) {
+                        compose.onAllNodesWithText("Review exact command").fetchSemanticsNodes().isNotEmpty()
+                    }
+                    compose.onNodeWithText("Review exact command").performScrollTo().assertIsEnabled()
+                    assertFalse("Opening a tool must not execute it", reviewedFile.exists())
+                    compose.onNodeWithText("Review exact command").performClick()
+                    compose.onNode(hasText(reviewedCommand) and hasAnyAncestor(isDialog())).assertExists()
+                    assertFalse("Opening the review must not execute the command", reviewedFile.exists())
+                    compose.onNode(hasText("Cancel") and hasAnyAncestor(isDialog())).performClick()
+                    compose.waitForIdle()
+                    assertFalse("Denying review must not execute the procedure", reviewedFile.exists())
+                    assertFalse("Denying review must not start a runtime operation", runtime.busy.value)
+                    record("reviewed_tool_import_open_and_deny_do_not_execute", "No nonce file exists after import, opening, exact-command review, and Cancel.")
+
+                    compose.onNodeWithText("Review exact command").performScrollTo().performClick()
+                    compose.onNode(hasText(reviewedCommand) and hasAnyAncestor(isDialog())).assertExists()
+                    compose.onNode(hasText("Run reviewed command") and hasAnyAncestor(isDialog())).performClick()
+                    idle()
+                    assertEquals(runtime.output.value, "Command finished", runtime.status.value)
+                    assertTrue("Approved real command did not produce its file", reviewedFile.isFile)
+                    assertEquals("APPROVED_$nonce", reviewedFile.readText())
+                    assertTrue(runtime.output.value, runtime.output.value.contains("stdout=TOOL_DONE_$nonce"))
+                    compose.onNodeWithText("Command submitted. Inspect its exit code and output below.").assertExists()
+                    record("reviewed_tool_approval_executes_real_shell_procedure", runtime.output.value + "\nActual file: " + reviewedFile.readText())
+                    compose.onNodeWithText("Back to workspace").performScrollTo().performClick()
+                    compose.waitForIdle()
+                } finally {
+                    if (runtime.busy.value) { runtime.cancel(); idle(15_000) }
+                    savedTool?.let { OpenMineObjectStore.delete(context, it) }
+                    reviewedFile.delete()
+                    preferences.edit().apply {
+                        if (originalRoute == null) remove("route") else putString("route", originalRoute)
+                        if (originalOpenedRecord == null) remove("opened_record") else putString("opened_record", originalOpenedRecord)
+                    }.commit()
+                }
                 command("rm -f '$cwd/continuity.txt'; cd /root; rmdir '$cwd'")
             }
             evidence.put("status", "passed")

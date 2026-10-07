@@ -41,7 +41,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-private data class AssistantUiState(
+internal data class AssistantUiState(
     val session:AssistantSession,
     val busy:Boolean=false,
     val phase:String="",
@@ -52,7 +52,7 @@ private data class AssistantUiState(
 )
 
 /** A process-owned request survives rotation. Background/navigation cancellation retains partial output. */
-private class AssistantSessionController private constructor(private val context:Context) {
+internal class AssistantSessionController(private val context:Context) {
     private val store=AssistantSessionStore(File(context.filesDir,"assistant/sessions-v1.json"))
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val storageMutex=Mutex()
@@ -129,18 +129,18 @@ private class AssistantSessionController private constructor(private val context
             conversation.copy(turns=conversation.turns.map{if(it.id==id)update(it)else it})
         }))}
     }
-    fun retry(turn:AssistantTurn,key:String){draft(turn.question);submit(key)}
-    @Synchronized fun submit(key:String){
+    fun retry(turn:AssistantTurn,key:String){submit(key,turn.question)}
+    @Synchronized fun submit(key:String,questionOverride:String?=null){
         val state=_state.value
         if(state.busy || state.loadBlocked || state.storageError!=null)return
-        val session=state.session;val question=session.current.draft.trim()
+        val session=state.session;val question=(questionOverride ?: session.current.draft).trim()
         val invalid=runCatching{ModelEndpoint.chatUri(session.endpoint);require(session.model.isNotBlank()){"Enter the installed server model ID."};require(question.isNotBlank()){"Enter a question."}}.exceptionOrNull()
         if(invalid!=null){change{it.copy(phase=invalid.message.orEmpty())};return}
         val control=ModelRequestControl();requestControl=control
         val turn=AssistantTurn(question=question,endpoint=session.endpoint,model=session.model)
         activeTurnId=turn.id
         change{it.copy(busy=true,phase="Saving request",session=it.session.updateCurrent{conversation->
-            conversation.copy(draft="",title=if(conversation.turns.isEmpty())question.take(56)else conversation.title,turns=conversation.turns+turn)
+            conversation.copy(draft=if(questionOverride==null)""else conversation.draft,title=if(conversation.turns.isEmpty())question.take(56)else conversation.title,turns=conversation.turns+turn)
         })}
         requestJob=scope.launch{
             try{
@@ -218,15 +218,10 @@ private class AssistantSessionController private constructor(private val context
     var showConnections by remember{mutableStateOf(session.endpoint.isBlank() || session.model.isBlank())}
     var showSessions by remember{mutableStateOf(false)}
     var copiedId by remember{mutableStateOf<String?>(null)}
-    val lifecycle=LocalLifecycleOwner.current
     val clipboard=LocalClipboardManager.current
     val textColor=Color(0xFFEAF5FF)
     val muted=Color(0xFF91A9C8)
-    DisposableEffect(lifecycle){
-        val observer=LifecycleEventObserver{_,event->if(event==Lifecycle.Event.ON_STOP && (c as? Activity)?.isChangingConfigurations!=true)controller.cancel("Cancelled when the app entered the background; retry to continue.")}
-        lifecycle.lifecycle.addObserver(observer)
-        onDispose{lifecycle.lifecycle.removeObserver(observer);if((c as? Activity)?.isChangingConfigurations!=true)controller.cancel("Cancelled when leaving AI Chat; retry to continue.")}
-    }
+    AssistantRequestLifecycle(c,controller)
     BackHandler(state.pendingReview!=null){controller.review(false)}
     state.pendingReview?.let{proposal->
         AlertDialog(onDismissRequest={controller.review(false)},title={Text("Review model tool")},
@@ -283,5 +278,15 @@ private class AssistantSessionController private constructor(private val context
         item{Button({controller.submit(key)},enabled=!state.busy && state.storageError==null && session.current.draft.isNotBlank() && session.endpoint.isNotBlank() && session.model.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text(if(state.busy)"Request in progress"else "Ask model with library context")}}
         if(state.busy)item{LinearProgressIndicator(Modifier.fillMaxWidth());Text("180-second request budget, including tool review. Cancelling preserves partial output.",color=muted,fontSize=12.sp);OutlinedButton({controller.cancel()}){Text("Cancel request")}}
         if(state.phase.isNotBlank())item{Text(state.phase,color=Color(0xFF38D8FF),modifier=Modifier.semantics{liveRegion=LiveRegionMode.Polite})}
+    }
+}
+
+/** The same lifecycle binding is used by the real screen and Android lifecycle verification. */
+@Composable internal fun AssistantRequestLifecycle(c:Context,controller:AssistantSessionController){
+    val owner=LocalLifecycleOwner.current
+    DisposableEffect(owner,controller){
+        val observer=LifecycleEventObserver{_,event->if(event==Lifecycle.Event.ON_STOP && (c as? Activity)?.isChangingConfigurations!=true)controller.cancel("Cancelled when the app entered the background; retry to continue.")}
+        owner.lifecycle.addObserver(observer)
+        onDispose{owner.lifecycle.removeObserver(observer);if((c as? Activity)?.isChangingConfigurations!=true)controller.cancel("Cancelled when leaving AI Chat; retry to continue.")}
     }
 }

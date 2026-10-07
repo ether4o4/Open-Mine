@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,6 +48,7 @@ private val RuntimeCyan=Color(0xFF38D8FF)
     val modelHealthy by runtime.modelHealthy.collectAsState()
     val output by (if(terminalOnly)runtime.terminalOutput else runtime.output).collectAsState()
     val models by runtime.models.collectAsState()
+    var previouslySeenModels by rememberSaveable{mutableStateOf(models.toTypedArray())}
     var command by remember{mutableStateOf(preferences.getString("command_draft","").orEmpty())}
     var selectedModel by remember{mutableStateOf(preferences.getString("selected_model","").orEmpty())}
     var followOutput by remember{mutableStateOf(preferences.getBoolean("follow_output",true))}
@@ -56,8 +58,10 @@ private val RuntimeCyan=Color(0xFF38D8FF)
         if(uri!=null){localMessage="";runtime.importModel(uri)}
     }
     LaunchedEffect(models){
-        if(selectedModel !in models && models.isNotEmpty()){
-            selectedModel=models.first();preferences.edit().putString("selected_model",selectedModel).apply()
+        val refreshed=ModelImportSelection.afterRefresh(previouslySeenModels.toList(),models,selectedModel)
+        previouslySeenModels=models.toTypedArray()
+        if(refreshed!=selectedModel){
+            selectedModel=refreshed;preferences.edit().putString("selected_model",selectedModel).apply()
         }
     }
     review?.let{exactCommand->CommandReviewDialog(exactCommand,

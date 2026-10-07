@@ -8,9 +8,18 @@ collect_restart_evidence() {
   adb -e logcat -d > verification/restart/logcat.txt 2>&1 || true
 }
 trap collect_restart_evidence EXIT
-for phase in seedState verifyRestoredState; do
+for phase in seedState verifyRestoredState verifyAfterReinstall; do
+  test_method="$phase"
+  if [ "$phase" = verifyAfterReinstall ]; then
+    # Exercise an in-place same-signature installation without clearing user data.
+    # This does not establish compatibility with the unavailable old signing key.
+    adb -e shell am force-stop com.openmine
+    adb -e install -r app/build/outputs/apk/debug/app-debug.apk > verification/restart/reinstall.txt
+    cat verification/restart/reinstall.txt
+    test_method=verifyRestoredState
+  fi
   adb -e shell am instrument -w -r -e isolatedEmulator true \
-    -e class "com.openmine.RestartPersistenceTest#$phase" \
+    -e class "com.openmine.RestartPersistenceTest#$test_method" \
     com.openmine.test/androidx.test.runner.AndroidJUnitRunner > "verification/restart/$phase.txt"
   cat "verification/restart/$phase.txt"
   python3 - "$phase" <<'PY'

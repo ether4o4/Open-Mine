@@ -183,6 +183,12 @@ class OpenMineRuntime private constructor(private val context:Context) {
         }
     }
     fun importModel(uri:Uri)=run("Importing GGUF model"){
+        val displayName=runCatching{
+            context.contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use{cursor->
+                val column=cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if(column>=0 && cursor.moveToFirst())cursor.getString(column)else null
+            }
+        }.getOrNull()?.takeIf{it.isNotBlank()} ?: uri.lastPathSegment
         val partial=File(modelDir,UUID.randomUUID().toString()+".part")
         try{
             context.contentResolver.openInputStream(uri)?.use{input->partial.outputStream().use{out->
@@ -192,11 +198,12 @@ class OpenMineRuntime private constructor(private val context:Context) {
                 out.write(header)
                 val buffer=ByteArray(65536);var total=4L
                 while(true){currentCoroutineContext().ensureActive();val count=input.read(buffer);if(count<0)break;total+=count;check(total<=8L*1024*1024*1024){"Model exceeds 8 GiB limit"};check(base.usableSpace>count+16L*1024*1024){"Not enough free storage"};out.write(buffer,0,count);_status.value="Imported ${total/(1024*1024)} MiB"}
+                out.fd.sync()
             }} ?: error("Cannot open model file")
             check(partial.length()>32){"Truncated GGUF file"}
-            val final=File(modelDir,partial.nameWithoutExtension+".gguf")
-            check(partial.renameTo(final)){"Could not finish model import"}
-            refreshModels();_status.value="GGUF imported. Start it to verify model architecture and memory requirements."
+            currentCoroutineContext().ensureActive()
+            val imported=com.openmine.ModelImportName.publish(partial,modelDir,displayName)
+            refreshModels();_status.value="Imported ${imported.name}. Start it to verify model architecture and memory requirements."
         }finally{partial.delete()}
     }
     private fun refreshModels(){models.value=modelDir.listFiles()?.filter{it.extension=="gguf"}?.map{it.name}?.sorted().orEmpty()}

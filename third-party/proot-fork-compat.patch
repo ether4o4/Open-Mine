@@ -1,0 +1,23 @@
+--- a/src/tracee/seccomp.c
++++ b/src/tracee/seccomp.c
+@@ -409,6 +409,20 @@
+ 		restart_syscall_after_seccomp(tracee);
+ 		break;
+ 
++	/* Android x86_64 exposes process creation through clone(2), as used
++	 * by bionic, rather than the legacy fork(2) syscall. Preserve fork's
++	 * exact flags/arguments without changing the host's syscall policy.
++	 * See termux/proot#237 (maintainer proposal + reporter verification). */
++	case PR_fork:
++		set_sysnum(tracee, PR_clone);
++		poke_reg(tracee, SYSARG_1, SIGCHLD);
++		poke_reg(tracee, SYSARG_2, 0);
++		poke_reg(tracee, SYSARG_3, 0);
++		poke_reg(tracee, SYSARG_4, 0);
++		poke_reg(tracee, SYSARG_5, 0);
++		restart_syscall_after_seccomp(tracee);
++		break;
++
+ 	case PR_access:
+ 		set_sysnum(tracee, PR_faccessat);
+ 		poke_reg(tracee, SYSARG_4, 0);

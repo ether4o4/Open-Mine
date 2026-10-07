@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Installed only with the instrumentation APK. Only the system document picker may
+             browse this provider; the target app must receive ordinary SAF URI grants. -->
+        <provider
+            android:name="com.openmine.TestDocumentsProvider"
+            android:authorities="com.openmine.test.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER"/>
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>

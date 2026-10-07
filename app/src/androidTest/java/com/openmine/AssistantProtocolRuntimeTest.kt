@@ -53,6 +53,15 @@ class AssistantProtocolRuntimeTest {
             assertTrue(reply.toolResults.single().startsWith("Declined linux_system_info"))
         }}
     }
+    @Test fun aFailedPostToolRequestDoesNotEraseTextAlreadyReceived(){
+        isolated { context->ProtocolFixture("search_library","{\"query\":\"engine\"}","Partial explanation before the tool",true).use { server->
+            var retained=""
+            val result=runCatching{ModelClient.ask(context,server.endpoint,"fixture-model","","Explain the engine",onText={retained=it},reviewTool={false})}
+            server.assertFinished()
+            assertTrue("HTTP failure must not become a successful reply",result.isFailure)
+            assertEquals("Partial explanation before the tool",retained)
+        }}
+    }
     private fun isolated(block:(Context)->Unit){
         val target=InstrumentationRegistry.getInstrumentation().targetContext
         val prefix="assistant-test-${UUID.randomUUID()}"
@@ -64,7 +73,7 @@ class AssistantProtocolRuntimeTest {
         }
         try{block(context)}finally{directory.deleteRecursively();target.deleteSharedPreferences("$prefix-open_mine")}
     }
-    private class ProtocolFixture(private val tool:String,private val arguments:String):Closeable {
+    private class ProtocolFixture(private val tool:String,private val arguments:String,private val prelude:String="",private val failFollowup:Boolean=false):Closeable {
         private val server=ServerSocket(0,4,InetAddress.getByName("127.0.0.1"))
         val endpoint="http://127.0.0.1:${server.localPort}/v1"
         val toolResult=AtomicReference("")
@@ -83,10 +92,14 @@ class AssistantProtocolRuntimeTest {
                 while(received<length){val count=input.read(bytes,received,length-received);check(count>0);received+=count}
                 val request=JSONObject(String(bytes,Charsets.UTF_8))
                 val out=socket.getOutputStream()
+                if(round==1 && failFollowup){
+                    out.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray());out.flush()
+                    return@use
+                }
                 out.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".toByteArray())
                 if(round==0){
                     val call=JSONObject().put("index",0).put("id","review-1").put("function",JSONObject().put("name",tool).put("arguments",arguments))
-                    out.write(event(JSONObject().put("tool_calls",JSONArray().put(call)),"tool_calls").toByteArray())
+                    out.write(event(JSONObject().put("tool_calls",JSONArray().put(call)).put("content",prelude),"tool_calls").toByteArray())
                 }else{
                     val messages=request.getJSONArray("messages")
                     val result=(0 until messages.length()).map{messages.getJSONObject(it)}.last{it.optString("role")=="tool"}
