@@ -1,14 +1,14 @@
 package com.openmine
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import android.util.AtomicFile
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 
 data class StrictObject(val fields: Map<String,String>, val sections: Map<String,Map<String,String>>, val raw: String) {
     val id get() = fields["OBJECT_ID"].orEmpty()
@@ -19,6 +19,7 @@ data class StrictObject(val fields: Map<String,String>, val sections: Map<String
 data class ValidationResult(val valid:Boolean,val errors:List<String>,val normalized:StrictObject?=null)
 
 object OpenMineObjectFormat {
+    const val MAX_RECORD_BYTES = 1024 * 1024
     private val schema = linkedMapOf(
         "OPEN_MINE_OBJECT" to listOf("OBJECT_VERSION","OBJECT_ID","OBJECT_TYPE","OBJECT_STATUS","OBJECT_TITLE","OBJECT_SUMMARY","OBJECT_TAGS","OBJECT_SOURCE","OBJECT_CREATED","OBJECT_UPDATED"),
         "CONTEXT_INDEX" to listOf("INDEX_KEYWORDS","INDEX_ALIASES","INDEX_TRIGGERS","INDEX_SCOPE","INDEX_PRIORITY"),
@@ -49,6 +50,15 @@ object OpenMineObjectFormat {
     }
 
     fun validate(raw:String):ValidationResult {
+        if (raw.length > MAX_RECORD_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_RECORD_BYTES)
+            return ValidationResult(false, listOf("Object exceeds 1 MiB"))
+        if (raw.any { (it.code < 32 && it !in "\r\n\t") || it.code == 127 })
+            return ValidationResult(false, listOf("Object contains unsupported control characters"))
+        if (raw.replace("\r\n", "").contains('\r'))
+            return ValidationResult(false, listOf("Object contains an isolated carriage return"))
+        if (runCatching {
+                Charsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(raw))
+            }.isFailure) return ValidationResult(false, listOf("Object is not valid UTF-8 text"))
         val o = parse(raw)
         val e = mutableListOf<String>()
         var section = ""
@@ -135,82 +145,18 @@ object OpenMineObjectFormat {
 }
 
 object OpenMineObjectStore {
-    private const val DIR="open_mine_objects"
-    private const val INDEX="open_mine_index.json"
-    private fun dir(c:Context)=File(c.filesDir,DIR).apply{mkdirs()}
-
-    fun all(c:Context):List<StrictObject> = dir(c).listFiles()?.filter{it.extension=="omd"}?.mapNotNull {
-        runCatching{OpenMineObjectFormat.validate(it.readText()).normalized}.getOrNull()
-    }?.filterNotNull()?.sortedBy{it.title} ?: emptyList()
-
-    fun import(c:Context,raw:String):ValidationResult {
-        val r=OpenMineObjectFormat.validate(raw)
-        if(!r.valid)return r
-        val o=r.normalized!!
-        val target = File(dir(c),o.id+".omd")
-        if (target.exists()) return ValidationResult(false,listOf("Object ID already exists: ${o.id}. Use a unique title or ID; existing knowledge was preserved."))
-        try {
-            atomicWrite(target, o.raw)
-            rebuildIndex(c)
-        } catch (error: Exception) {
-            target.delete()
-            return ValidationResult(false,listOf("Could not save and index object: ${error.message}"))
-        }
-        return r
+    private val changed = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = changed.asStateFlow()
+    private val repositories = ConcurrentHashMap<String, KnowledgeRepository>()
+    private fun repository(c:Context):KnowledgeRepository = repositories.getOrPut(c.filesDir.canonicalPath) {
+        KnowledgeRepository(c.filesDir) { synchronized(changed) { changed.value += 1 } }
     }
-
-    fun update(c:Context,id:String,raw:String):ValidationResult {
-        val result=OpenMineObjectFormat.validate(raw)
-        if(!result.valid)return result
-        if(result.normalized!!.id!=id)return ValidationResult(false,listOf("Editing cannot change the object ID"))
-        val target=File(dir(c),id+".omd")
-        if(!target.isFile)return ValidationResult(false,listOf("Object no longer exists"))
-        val previous=target.readText()
-        return try{atomicWrite(target,result.normalized.raw);rebuildIndex(c);result}
-        catch(e:Exception){atomicWrite(target,previous);ValidationResult(false,listOf("Update failed: ${e.message}"))}
-    }
-    fun delete(c:Context,o:StrictObject){
-        val target=File(dir(c),o.id+".omd")
-        val previous=target.readText()
-        check(target.delete()){"Could not delete object"}
-        try{rebuildIndex(c)}catch(e:Exception){atomicWrite(target,previous);throw e}
-    }
-
-    private fun atomicWrite(file:File, value:String) {
-        val atomic = AtomicFile(file)
-        val stream = atomic.startWrite()
-        try { stream.write(value.toByteArray(Charsets.UTF_8)); atomic.finishWrite(stream) }
-        catch (error:Exception) { atomic.failWrite(stream); throw error }
-    }
-
-    fun create(c:Context,o:StrictObject)=import(c,o.raw)
-
-    fun rebuildIndex(c:Context) {
-        val root=JSONObject()
-        all(c).forEach { o ->
-            val terms=linkedSetOf<String>()
-            val source=(o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" "))
-            terms.addAll(tokenize(source))
-            val chunks=JSONArray()
-            o.sections.forEach { (section,values) -> values.forEach { (label,value) ->
-                if(value.isNotBlank()&&!value.equals("NONE",true)) chunks.put(JSONObject()
-                    .put("OBJECT_ID",o.id).put("OBJECT_TYPE",o.type).put("OBJECT_TITLE",o.title).put("OBJECT_STATUS",o.status)
-                    .put("SECTION",section).put("LABEL",label).put("CHUNK_ID",o.id+"."+section+"."+label)
-                    .put("CHUNK_PRIORITY",o.sections["CONTEXT_INDEX"]?.get("INDEX_PRIORITY") ?: "50").put("CONTENT",value))
-            }}
-            root.put(o.id,JSONObject().put("OBJECT_ID",o.id).put("OBJECT_TYPE",o.type).put("OBJECT_TITLE",o.title).put("OBJECT_STATUS",o.status).put("TERMS",JSONArray(terms.toList())).put("CHUNKS",chunks))
-        }
-        atomicWrite(File(c.filesDir,INDEX),root.toString(2))
-    }
-
-    fun search(c:Context,q:String):List<StrictObject> {
-        val terms=tokenize(q)
-        return all(c).map{o ->
-            val text=o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" ")
-            val indexedTerms=tokenize(text)
-            o to terms.count{it in indexedTerms}
-        }.filter{it.second>0}.sortedByDescending{it.second}.map{it.first}
-    }
-
-    private fun tokenize(v:String)=v.lowercase(Locale.US).split(Regex("[^a-z0-9._-]+")).filter{it.length>=2}.toSet()
+    fun inspect(c:Context):KnowledgeStoreSnapshot = repository(c).inspect()
+    fun all(c:Context):List<StrictObject> = inspect(c).records
+    fun import(c:Context,raw:String):ValidationResult = repository(c).import(raw)
+    fun update(c:Context,id:String,raw:String):ValidationResult = repository(c).update(id,raw)
+    fun delete(c:Context,o:StrictObject) = repository(c).delete(o.id)
+    fun create(c:Context,o:StrictObject):ValidationResult = import(c,o.raw)
+    fun rebuildIndex(c:Context) { repository(c).rebuildIndex() }
+    fun search(c:Context,q:String):List<StrictObject> = repository(c).search(q)
 }

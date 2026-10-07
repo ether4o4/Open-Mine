@@ -14,7 +14,7 @@ class RootfsArchiveTest {
         "0000644".toByteArray().copyInto(header,100)
         declaredSize.toString(8).padStart(11,'0').toByteArray().copyInto(header,124)
         header[156]='0'.code.toByte()
-        GZIPOutputStream(file.outputStream()).use{it.write(header);it.write(data)}
+        GZIPOutputStream(file.outputStream()).use{it.write(header);it.write(data);if(data.size==declaredSize)it.write(ByteArray((512-data.size%512)%512))}
         return file
     }
     @Test fun refusesSiblingPrefixTraversal(){

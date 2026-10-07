@@ -6,7 +6,14 @@ plugins {
 android {
     namespace = "com.openmine"
     compileSdk = 36
-    defaultConfig { applicationId = "com.openmine"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.2.2-dev" }
+    defaultConfig {
+        applicationId = "com.openmine"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 5
+        versionName = "0.3.0-dev"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
     buildFeatures { compose = true; buildConfig = true }
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
@@ -24,8 +31,14 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
 }
 
 kotlin {

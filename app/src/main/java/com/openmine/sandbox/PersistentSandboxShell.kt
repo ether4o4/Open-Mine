@@ -1,296 +1,192 @@
 package com.openmine.sandbox
 
-
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 private const val MAX_OUTPUT_LENGTH = 15_000
+private const val RS = "\u001e"
+private const val US = "\u001f"
+private const val PID_PROBE_PREFIX = "${RS}OPENMINEPID$US"
 
-// Sentinel uses ASCII Record Separator (0x1e) and Unit Separator (0x1f),
-// emitted to stderr so user redirects of stdout don't swallow it. Octal
-// escapes for portability across bash/busybox printf.
-private const val RS = ""
-private const val US = ""
-
-// Marker emitted once at shell startup so we know bash's pid before any user
-// command has finished. Without this, cancel on the first command had nothing
-// to signal (bashPid was null, set only from the sentinel of a completed run).
-private const val PID_PROBE_PREFIX = "${RS}MVEBASHPID$US"
-
+/** A persistent Bash process. This is a shell, not a security boundary for hostile commands. */
 class PersistentSandboxShell(
     private val executor: ProotExecutor,
     private val tmpPath: String,
-    private val initialCwd: String = "/root",
+    initialCwd: String = "/root",
+    private val guestTmpPath: String = "/tmp",
 ) {
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
+    private val stateLock = Any()
     @Volatile private var handle: ProotHandle? = null
-
     @Volatile private var bashPid: Int? = null
+    @Volatile private var processToken: Any? = null
+    @Volatile private var lastCwd = initialCwd
     private var watchdog: Job? = null
     private val currentSink = AtomicReference<CommandSink?>(null)
 
     private class CommandSink(
         val nonce: String,
-        val stdoutBuf: StringBuilder = StringBuilder(),
-        val stderrBuf: StringBuilder = StringBuilder(),
-        val onStdout: ((String) -> Unit)? = null,
-        val onStderr: ((String) -> Unit)? = null,
-        val done: CompletableDeferred<Result> = CompletableDeferred(),
-    )
+        val onStdout: ((String) -> Unit)?,
+        val onStderr: ((String) -> Unit)?,
+    ) {
+        val stdout = StringBuilder()
+        val stderr = StringBuilder()
+        val done = CompletableDeferred<Result>()
+        var stdoutFinished = false
+        var stderrResult: Result? = null
+    }
 
-    data class Result(
-        val exitCode: Int,
-        val cwd: String,
-        val bashPid: Int,
-        val shellDied: Boolean = false,
-    )
+    data class Result(val exitCode: Int, val cwd: String, val bashPid: Int, val shellDied: Boolean = false)
 
-    /**
-     * Run a single command in the persistent shell. Suspends until the
-     * sentinel is observed, the per-command timeout fires, or the shell dies.
-     * Concurrent calls are serialized by an internal mutex.
-     */
+    /** Sources commands to retain cwd/export, and drains BOTH output pipes before returning. */
     suspend fun run(
         command: String,
         timeoutSeconds: Long,
         onStdout: ((String) -> Unit)? = null,
         onStderr: ((String) -> Unit)? = null,
     ): Map<String, Any> = mutex.withLock {
-        ensureShell()
-        val nonce = randomNonce()
-        val sink = CommandSink(nonce = nonce, onStdout = onStdout, onStderr = onStderr)
-        currentSink.set(sink)
-
-        val cmdFile = File(tmpPath, ".morsvitaest_cmd_$nonce")
+        require(command.isNotBlank()) { "Enter a shell command" }
+        require(command.length <= 8192 && '\u0000' !in command) { "Command is too large or contains NUL" }
+        val sink = CommandSink(UUID.randomUUID().toString().replace("-", ""), onStdout, onStderr)
+        val cmdFile = File(tmpPath, ".openmine_cmd_${sink.nonce}")
         try {
+            ensureShell()
+            currentSink.set(sink)
             cmdFile.writeText(command)
-        } catch (e: Exception) {
-            currentSink.set(null)
-            return@withLock errorMap(stderr = "Failed to stage command: ${e.message}")
-        }
-
-        // Source the user command (preserves cwd/env), capture exit, emit sentinel.
-        // Leading \n flushes any partial stderr line (e.g. Python's >>> prompt
-        // with no trailing newline) so the sentinel arrives on a clean line.
-        val line = ". /tmp/.morsvitaest_cmd_$nonce; __mve_st=\$?; rm -f /tmp/.morsvitaest_cmd_$nonce; " +
-            "printf '\\n\\036%s\\037%d\\037%d\\037%s\\036\\n' '$nonce' \"\$__mve_st\" \"\$\$\" \"\$PWD\" >&2"
-        handle?.writeInput(line)
-
-        val result = withTimeoutOrNull(timeoutSeconds.seconds) { sink.done.await() }
-        if (result == null) {
-            // Hung command. Try a graduated cancel; if that doesn't shake it
-            // loose within a short grace, reset the shell.
-            cancelForeground()
-            val recovered = withTimeoutOrNull(2.seconds) { sink.done.await() }
-            currentSink.set(null)
-            if (recovered == null) {
-                reset()
-                return@withLock timeoutMap(sink, stderr = "Command timed out and shell was reset")
+            val path = quote("$guestTmpPath/${cmdFile.name}")
+            // Dedicated descriptors survive ordinary `exec >file` / `exec 2>file` redirects.
+            // Both pipes need a barrier: a stderr marker alone can race stdout delivery,
+            // and a command like `printf hello` otherwise never releases readLine().
+            val line = ". $path; __openmine_status=\$?; command rm -f $path; " +
+                "builtin printf '\\n\\036%s\\036\\n' '${sink.nonce}' >&19; " +
+                "builtin printf '\\n\\036%s\\037%d\\037%d\\037%s\\036\\n' '${sink.nonce}' \"\$__openmine_status\" \"\$\$\" \"\$PWD\" >&20"
+            check(handle?.writeInput(line) == true) { "Shell input closed; retry the command" }
+            val result = withTimeoutOrNull(timeoutSeconds.coerceIn(1, 1800) * 1000) { sink.done.await() }
+            if (result == null) {
+                cancelForeground()
+                val recovered = withTimeoutOrNull(2000) { sink.done.await() }
+                if (recovered == null) reset()
+                return@withLock buildResult(sink, recovered ?: Result(-1, lastCwd, 0, true), timedOut = true)
             }
-            return@withLock buildResult(sink, recovered, timedOut = true)
-        }
-        currentSink.set(null)
-        if (result.shellDied) {
-            return@withLock buildResult(sink, result, shellDied = true)
-        }
-        bashPid = result.bashPid
-        return@withLock buildResult(sink, result)
-    }
-
-    /**
-     * Forward a stdin line to the running command. The shell's stdin is also
-     * the foreground command's stdin (no redirection), so this delivers
-     * interactive input (e.g. ssh password prompts) to the running process.
-     */
-    fun writeInput(line: String) {
-        handle?.writeInput(line)
-    }
-
-    /**
-     * Best-effort interrupt of the foreground command without killing the
-     * shell itself. Without a PTY we can't deliver SIGINT through line
-     * discipline, so we send signals to bash's children from a sibling proot.
-     * Falls back to a full shell reset if the pid isn't known yet (probe race)
-     * or if even SIGKILL doesn't free the foreground.
-     */
-    fun cancelForeground() {
-        val pid = bashPid
-        if (pid == null) {
-            // No pid captured yet — the user expects cancel to actually do
-            // something, so nuke the shell. The next run lazily restarts it.
+            if (!result.shellDied) { lastCwd = result.cwd; bashPid = result.bashPid }
+            buildResult(sink, result)
+        } catch (e: CancellationException) {
+            // A cancelled caller must not release the mutex while its command keeps
+            // running; otherwise a subsequent command inherits the old output/process.
+            withContext(NonCancellable) {
+                cancelForeground()
+                withTimeoutOrNull(1500) { sink.done.await() }
+                reset()
+            }
+            throw e
+        } catch (e: Exception) {
             reset()
-            return
+            synchronized(sink) { appendBounded(sink.stderr, e.message ?: "Shell command failed") }
+            buildResult(sink, Result(-1, lastCwd, 0, true))
+        } finally {
+            currentSink.compareAndSet(sink, null)
+            cmdFile.delete()
         }
+    }
+
+    fun writeInput(line: String) { handle?.writeInput(line) }
+
+    /** Escalation belongs only to the command that was active when Cancel was pressed. */
+    fun cancelForeground() {
+        val sink = currentSink.get() ?: return
+        val activeHandle = handle
+        val pid = bashPid
+        if (pid == null) { reset(); return }
         scope.launch {
             for (signal in listOf("INT", "TERM", "KILL")) {
-                sendSignalToChildren(pid, signal)
-                delay(500.milliseconds)
-                // Stop escalating as soon as the in-flight command finishes
-                // (sentinel arrived) or there's no in-flight command anymore.
-                val done = currentSink.get()?.done?.isCompleted
-                if (done == null || done == true) return@launch
+                if (currentSink.get() !== sink || sink.done.isCompleted || handle !== activeHandle) return@launch
+                runCatching { executor.execute("kids=\$(pgrep -P $pid); [ -z \"\$kids\" ] || kill -$signal \$kids", 2) }
+                delay(300)
             }
-            // Even SIGKILL didn't free us — the shell itself must be wedged.
-            reset()
+            if (currentSink.get() === sink && !sink.done.isCompleted && handle === activeHandle) reset()
         }
     }
 
-    /** Tear down the shell. Next [run] will lazily restart it. */
-    fun reset() {
+    fun reset() = synchronized(stateLock) {
+        val old = handle
+        handle = null
+        processToken = null
+        bashPid = null
         watchdog?.cancel()
         watchdog = null
-        handle?.cancel()
-        handle = null
-        bashPid = null
-        // Fail any in-flight command.
-        currentSink.getAndSet(null)?.done?.complete(
-            Result(exitCode = -1, cwd = "/root", bashPid = 0, shellDied = true),
-        )
+        old?.cancel()
+        currentSink.getAndSet(null)?.done?.complete(Result(-1, lastCwd, 0, true))
+        Unit
     }
 
-    private fun ensureShell() {
-        if (handle != null) return
-        // Non-interactive bash. We have no tty, so -i would only emit prompts
-        // to stderr that we'd have to filter. --noprofile/--norc keep the env
-        // clean; bash still reads commands from stdin line by line, executes
-        // them in-process (so cd/export/. preserve state), and inherits its
-        // stdin to any foreground child (so ssh can read passwords typed via
-        // writeInput).
+    private fun ensureShell() = synchronized(stateLock) {
+        if (handle != null) return@synchronized
+        val token = Any()
+        processToken = token
         val h = executor.executeStreaming(
             command = "exec bash --noprofile --norc",
-            onStdout = { line -> dispatchStdout(line) },
-            onStderr = { line -> dispatchStderr(line) },
+            onStdout = { dispatch(it, false, token) },
+            onStderr = { dispatch(it, true, token) },
         )
         handle = h
-        h.writeInput("cd '${initialCwd.replace("'", "'\\''")}' 2>/dev/null || cd /root")
-        // Capture bash's pid before any user command runs. The dispatcher
-        // recognizes this marker on stderr and sets bashPid, so cancel on
-        // the very first command has something to signal. Leading \n matches
-        // the sentinel pattern below — flushes any partial line first.
-        h.writeInput("printf '\\n\\036MVEBASHPID\\037%d\\036\\n' \"\$\$\" >&2")
+        check(h.writeInput("exec 19>&1 20>&2; cd ${quote(lastCwd)} 2>/dev/null || cd /root")) { "Bash failed to start" }
+        check(h.writeInput("builtin printf '\\n\\036OPENMINEPID\\037%d\\036\\n' \"\$\$\" >&20")) { "Bash failed to start" }
         watchdog = scope.launch {
             h.awaitExit(0)
-            // Shell died. Wake up any in-flight command with a shellDied result
-            // so callers don't sit on a sentinel that will never come.
-            currentSink.getAndSet(null)?.done?.complete(
-                Result(exitCode = -1, cwd = "/root", bashPid = bashPid ?: 0, shellDied = true),
-            )
-            handle = null
-            bashPid = null
+            synchronized(stateLock) {
+                // A delayed watcher from the old process must never tear down a new one.
+                if (handle === h) {
+                    handle = null
+                    bashPid = null
+                    currentSink.getAndSet(null)?.done?.complete(Result(-1, lastCwd, 0, true))
+                }
+            }
         }
     }
 
-    private fun dispatchStdout(line: String) {
-        val sink = currentSink.get() ?: return
-        appendBounded(sink.stdoutBuf, line)
-        sink.onStdout?.invoke(line)
-    }
-
-    private fun dispatchStderr(line: String) {
-        // Suppress blank stderr lines. Sentinel emission prepends \n to flush
-        // any partial line ahead of it, which produces a stray empty line when
-        // there's nothing to flush. Legitimate blank stderr is rare; dropping
-        // it is a worthwhile tradeoff for clean output.
-        if (line.isEmpty()) return
-        // Startup pid probe — handled regardless of whether a sink is active.
-        if (line.startsWith(PID_PROBE_PREFIX) && line.endsWith(RS)) {
-            val pidText = line.substring(PID_PROBE_PREFIX.length, line.length - 1)
-            pidText.toIntOrNull()?.let { bashPid = it }
+    private fun dispatch(line: String, stderr: Boolean, token: Any) {
+        if (processToken !== token) return
+        if (stderr && line.startsWith(PID_PROBE_PREFIX) && line.endsWith(RS)) {
+            line.substring(PID_PROBE_PREFIX.length, line.length - 1).toIntOrNull()?.let { bashPid = it }
             return
         }
         val sink = currentSink.get() ?: return
-        // Sentinel format: \x1e<nonce>\x1f<exit>\x1f<pid>\x1f<pwd>\x1e
-        if (line.length >= 2 && line.startsWith(RS) && line.endsWith(RS)) {
-            val payload = line.substring(1, line.length - 1)
-            val parts = payload.split(US)
-            if (parts.size == 4 && parts[0] == sink.nonce) {
-                val exit = parts[1].toIntOrNull() ?: -1
-                val pid = parts[2].toIntOrNull() ?: 0
-                val cwd = parts[3]
-                sink.done.complete(Result(exitCode = exit, cwd = cwd, bashPid = pid))
-                return
+        synchronized(sink) {
+            if (!stderr && line == "$RS${sink.nonce}$RS") {
+                sink.stdoutFinished = true
+            } else if (stderr && line.startsWith("$RS${sink.nonce}$US") && line.endsWith(RS)) {
+                val parts = line.substring(1, line.length - 1).split(US, limit = 4)
+                if (parts.size == 4) sink.stderrResult = Result(parts[1].toIntOrNull() ?: -1, parts[3], parts[2].toIntOrNull() ?: 0)
+            } else if (line.isNotEmpty()) {
+                appendBounded(if (stderr) sink.stderr else sink.stdout, line)
+                if (stderr) sink.onStderr?.invoke(line) else sink.onStdout?.invoke(line)
             }
-        }
-        appendBounded(sink.stderrBuf, line)
-        sink.onStderr?.invoke(line)
-    }
-
-    private fun sendSignalToChildren(parentPid: Int, signal: String) {
-        // pgrep/pkill come from busybox and are present in the base rootfs.
-        // We use pgrep + xargs kill because some busybox builds don't have
-        // pkill -P. Failure is swallowed; this is best-effort.
-        runCatching {
-            executor.execute(
-                command = "kids=\$(pgrep -P $parentPid); [ -n \"\$kids\" ] && kill -$signal \$kids",
-                timeoutSeconds = 5,
-            )
+            val result = sink.stderrResult
+            if (sink.stdoutFinished && result != null) sink.done.complete(result)
         }
     }
 
-    private fun buildResult(
-        sink: CommandSink,
-        result: Result,
-        timedOut: Boolean = false,
-        shellDied: Boolean = false,
-    ): Map<String, Any> {
-        val stderr = if (shellDied || result.shellDied) {
-            val tail = sink.stderrBuf.toString()
-            if (tail.isEmpty()) "Shell session ended" else "$tail\nShell session ended"
-        } else {
-            sink.stderrBuf.toString()
-        }
-        return mapOf(
-            "success" to (!timedOut && !shellDied && !result.shellDied && result.exitCode == 0),
-            "stdout" to sink.stdoutBuf.toString().smartTruncate(MAX_OUTPUT_LENGTH),
-            "stderr" to stderr.smartTruncate(MAX_OUTPUT_LENGTH),
-            "exit_code" to if (timedOut) -1 else result.exitCode,
+    private fun buildResult(sink: CommandSink, result: Result, timedOut: Boolean = false): Map<String, Any> = synchronized(sink) {
+        mapOf(
+            "success" to (!timedOut && !result.shellDied && result.exitCode == 0),
+            "stdout" to sink.stdout.toString(),
+            "stderr" to (sink.stderr.toString() + if (timedOut) "\nCommand timed out" else if (result.shellDied) "\nShell session ended; the next command starts a new session" else "").take(MAX_OUTPUT_LENGTH),
+            "exit_code" to if (timedOut) 124 else result.exitCode,
             "timed_out" to timedOut,
             "cwd" to result.cwd,
-            "shell_died" to (shellDied || result.shellDied),
+            "shell_died" to result.shellDied,
         )
     }
-
-    private fun timeoutMap(sink: CommandSink, stderr: String): Map<String, Any> = mapOf(
-        "success" to false,
-        "stdout" to sink.stdoutBuf.toString().smartTruncate(MAX_OUTPUT_LENGTH),
-        "stderr" to (sink.stderrBuf.toString() + "\n" + stderr).smartTruncate(MAX_OUTPUT_LENGTH),
-        "exit_code" to -1,
-        "timed_out" to true,
-        "cwd" to "/root",
-        "shell_died" to true,
-    )
-
-    private fun errorMap(stderr: String): Map<String, Any> = mapOf(
-        "success" to false,
-        "stdout" to "",
-        "stderr" to stderr,
-        "exit_code" to -1,
-        "timed_out" to false,
-        "cwd" to "/root",
-        "shell_died" to false,
-    )
 }
 
+private fun quote(value: String) = "'${value.replace("'", "'\\''")}'"
 private fun appendBounded(buf: StringBuilder, line: String) {
     if (buf.length >= MAX_OUTPUT_LENGTH) return
     if (buf.isNotEmpty()) buf.append('\n')
-    buf.append(line)
+    buf.append(line.take((MAX_OUTPUT_LENGTH - buf.length).coerceAtLeast(0)))
 }
-
-private fun randomNonce(): String = (0 until 16).map { "0123456789abcdef".random() }.joinToString("")
-
-private fun String.smartTruncate(limit: Int): String = take(limit)

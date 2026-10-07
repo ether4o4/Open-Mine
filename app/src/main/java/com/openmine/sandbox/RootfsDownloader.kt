@@ -1,6 +1,8 @@
 package com.openmine.sandbox
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
@@ -29,6 +31,8 @@ private const val TAR_LINK_OFFSET = 157
 private const val TAR_PREFIX_OFFSET = 345
 
 class RootfsDownloader {
+    private val activeConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<java.net.HttpURLConnection>()
+    fun cancel() { activeConnections.forEach { it.disconnect() } }
 
     val mirrors: List<String> = ALPINE_MIRRORS
 
@@ -44,15 +48,18 @@ class RootfsDownloader {
         val urls = getDownloadUrls(arch)
         var lastError: Exception? = null
         for ((index, url) in urls.withIndex()) {
+            currentCoroutineContext().ensureActive()
             try {
                 downloadFrom(url, targetFile, onProgress)
                 val checksumConnection = java.net.URL("$url.sha256").openConnection() as java.net.HttpURLConnection
+                activeConnections.add(checksumConnection)
+                currentCoroutineContext().ensureActive()
                 checksumConnection.connectTimeout = 15000
                 checksumConnection.readTimeout = 30000
                 val expected = try {
                     check(checksumConnection.responseCode == 200) { "Rootfs checksum unavailable" }
                     checksumConnection.inputStream.bufferedReader().use { it.readLine().trim().split(Regex("\\s+")).first() }
-                } finally { checksumConnection.disconnect() }
+                } finally { activeConnections.remove(checksumConnection); checksumConnection.disconnect() }
                 check(Regex("[a-fA-F0-9]{64}").matches(expected)) { "Invalid rootfs checksum" }
                 val digest = java.security.MessageDigest.getInstance("SHA-256")
                 targetFile.inputStream().use { input -> val buffer = ByteArray(65536); while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) } }
@@ -76,9 +83,11 @@ class RootfsDownloader {
         onProgress: (Float) -> Unit,
     ) {
         val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        activeConnections.add(connection)
         connection.connectTimeout = 15000
         connection.readTimeout = 60000
         try {
+            currentCoroutineContext().ensureActive()
             check(connection.responseCode in 200..299) { "Rootfs HTTP ${connection.responseCode}" }
             val total = connection.contentLengthLong
             var received = 0L
@@ -86,6 +95,7 @@ class RootfsDownloader {
                 targetFile.outputStream().use { output ->
                     val buffer = ByteArray(BUFFER_SIZE)
                     while (true) {
+                        currentCoroutineContext().ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
                         received += count
@@ -96,7 +106,7 @@ class RootfsDownloader {
                 }
             }
             check(total < 0 || received == total) { "Incomplete rootfs download" }
-        } finally { connection.disconnect() }
+        } finally { activeConnections.remove(connection); connection.disconnect() }
     }
     fun extractTarGz(tarGzFile: File, targetDir: File) {
         targetDir.mkdirs()
@@ -112,7 +122,8 @@ class RootfsDownloader {
 
         while (true) {
             val headerBytesRead = readFully(inputStream, headerBuffer)
-            if (headerBytesRead < TAR_BLOCK_SIZE) break
+            if (headerBytesRead == 0) break
+            if (headerBytesRead < TAR_BLOCK_SIZE) throw IOException("Truncated rootfs header")
 
             val name = readTarString(headerBuffer, TAR_NAME_OFFSET, 100)
             if (name.isEmpty()) break
@@ -212,7 +223,7 @@ class RootfsDownloader {
         while (remaining > 0) {
             val skipped = inputStream.skip(remaining)
             if (skipped <= 0) {
-                if (inputStream.read() < 0) break
+                if (inputStream.read() < 0) throw IOException("Truncated rootfs entry padding")
                 remaining -= 1
             } else {
                 remaining -= skipped

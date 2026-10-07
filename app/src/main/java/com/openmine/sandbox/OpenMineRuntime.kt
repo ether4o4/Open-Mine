@@ -7,6 +7,7 @@ import com.openmine.BuildConfig
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.selects.select
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -30,17 +31,33 @@ class OpenMineRuntime private constructor(private val context:Context) {
     val models=MutableStateFlow<List<String>>(emptyList())
     private var job:Job?=null
     private var handle:ProotHandle?=null
-    val ready get()=marker.exists()
+    private var modelServerHandle:ProotHandle?=null
+    val shellHealthy=MutableStateFlow(false)
+    val modelHealthy=MutableStateFlow(false)
+    val ready get()=shellHealthy.value
+    private val installed get()=marker.exists() && File(rootfs,"bin/bash").isFile && File(rootfs,"bin/busybox").isFile
     private val modelDir get()=File(home,".morsvitaest/llm/models").apply{mkdirs()}
-    init{refreshModels()}
+    init{
+        refreshModels()
+        if(installed) verifyShell() else _status.value="Linux shell needs setup or repair"
+    }
+    fun verifyShell()=run("Checking Linux shell"){probeShell();_status.value="Linux shell execution verified"}
+    private suspend fun probeShell(){
+        shellHealthy.value=false
+        val result=runInterruptible(Dispatchers.IO){executor().execute("bash --noprofile --norc -c 'printf OPENMINE_SHELL_OK'",10)}
+        check(result["success"]==true && result["stdout"]=="OPENMINE_SHELL_OK") {
+            "Linux shell execution failed: ${result["stderr"] ?: result["error"]}. Existing files were preserved; retry setup to repair prerequisites."
+        }
+        shellHealthy.value=true
+    }
     private fun refreshEngineScript(){context.assets.open("sandbox/morsllm.sh").use{ShellScriptInstaller.install(File(home,"morsllm.sh"),it.readBytes())}}
     private fun executor()=ProotExecutor(File(context.applicationInfo.nativeLibraryDir,"libproot.so").absolutePath,base.absolutePath,rootfs.absolutePath,home.absolutePath,tmp.absolutePath)
-    private fun run(label:String,action:suspend ()->Unit){
+    @Synchronized private fun run(label:String,action:suspend ()->Unit){
         if(busy.value)return
         busy.value=true;_status.value=label;if(label!="Running command") output.value=""
         job=scope.launch{try{action()}catch(e:CancellationException){_status.value="Cancelled"}catch(e:Exception){_status.value="Failed: ${e.message}"}finally{handle=null;busy.value=false}}
     }
-    fun cancel(){session.cancelForeground();handle?.cancel();job?.cancel()}
+    fun cancel(){job?.cancel();downloader.cancel();session.cancelForeground();handle?.cancel()}
     fun setup()=run("Setting up Linux shell"){
         check(BuildConfig.DEBUG){"Runtime downloads are disabled in release builds pending Play-compatible packaging."}
         check(File(context.applicationInfo.nativeLibraryDir,"libproot.so").canExecute()){"No executable PRoot binary for this device ABI."}
@@ -48,7 +65,15 @@ class OpenMineRuntime private constructor(private val context:Context) {
         base.mkdirs()
         val talloc=File(context.applicationInfo.nativeLibraryDir,"libtalloc.so")
         talloc.copyTo(File(base,"libtalloc.so.2"),overwrite=true)
+        if (!File(base,"rootfs.valid").exists() && File(rootfs,"bin/busybox").isFile && File(rootfs,"etc/alpine-release").isFile) {
+            // Older installs may have a missing marker. Adopt their rootfs; never
+            // erase installed packages or shell files just because metadata is lost.
+            File(base,"rootfs.valid").writeText("recovered existing installation")
+        }
         if(!File(base,"rootfs.valid").exists()){
+            check(!rootfs.exists() || rootfs.listFiles().isNullOrEmpty()) {
+                "Existing Linux files need repair; automatic setup will not replace or delete them."
+            }
             val archive=File(base,"rootfs.tar.gz")
             val staging=File(base,"rootfs-staging")
             staging.deleteRecursively()
@@ -56,7 +81,8 @@ class OpenMineRuntime private constructor(private val context:Context) {
                 downloader.download(arch,archive){_status.value="Downloading Linux: ${(it*100).toInt()}%"}
                 downloader.extractTarGz(archive,staging)
                 check(File(staging,"bin/busybox").isFile){"Incomplete rootfs archive"}
-                rootfs.deleteRecursively()
+                // Only an empty target may be removed to make the rename possible.
+                if (rootfs.exists()) check(rootfs.delete()) { "Cannot replace empty installation directory" }
                 check(staging.renameTo(rootfs)){"Cannot finish Linux installation"}
                 File(base,"rootfs.valid").writeText("verified")
             }finally{archive.delete();staging.deleteRecursively()}
@@ -65,16 +91,29 @@ class OpenMineRuntime private constructor(private val context:Context) {
         downloader.writeResolvConf(rootfs)
         downloader.writeRepositories(rootfs,downloader.mirrors.first())
         _status.value="Installing shell and engine prerequisites"
-        val result=executor().execute("apk add --no-cache bash curl jq git",180)
-        output.value=result.toString();check(result["success"]==true){"Linux prerequisites failed. See output and retry setup."}
+        val running=executor().executeStreaming("apk add --no-cache bash curl jq git",onStdout={line->output.value=(output.value+"\n"+line).takeLast(20000)},onStderr={line->output.value=(output.value+"\n"+line).takeLast(20000)})
+        handle=running
+        val exit=try { withTimeout(180000) { runInterruptible(Dispatchers.IO) { running.awaitExit() } } }
+            finally { if (!currentCoroutineContext().isActive) running.cancel() }
+        check(exit==0){"Linux prerequisites failed (exit $exit). See output and retry setup."}
         refreshEngineScript()
+        probeShell()
         marker.writeText("ready")
-        _status.value="Linux shell ready"
+        _status.value="Linux shell execution verified"
     }
     fun command(command:String)=run("Running command"){
         check(ready){"Set up Linux shell first."}
-        val result=session.run(command,30)
-        output.value=(terminalOutput.value+"\n$ "+command+"\n"+result.toString()).takeLast(20000)
+        val history=(terminalOutput.value+"\n$ "+command+"\n").takeLast(20000)
+        var live=""
+        val result=try {
+            session.run(command,30,onStdout={line->synchronized(this){live=(live+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}},onStderr={line->synchronized(this){live=(live+"stderr: "+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}})
+        } catch (e: CancellationException) {
+            terminalOutput.value=(history+live+"\nCommand cancelled; shell session reset.\n").takeLast(20000)
+            transcript.writeText(terminalOutput.value)
+            output.value=terminalOutput.value
+            throw e
+        }
+        output.value=(history+result.toString()).takeLast(20000)
         terminalOutput.value=output.value
         transcript.writeText(output.value)
         if(result["shell_died"]!=true) File(base,"terminal-cwd.txt").writeText(result["cwd"].toString())
@@ -93,11 +132,38 @@ class OpenMineRuntime private constructor(private val context:Context) {
         refreshEngineScript()
         val argument=if(action=="serve")" '${model.replace("'","'\\''")}'" else ""
         var tail=""
-        val running=executor().executeStreaming("bash /root/morsllm.sh $action$argument",onStdout={line->synchronized(this){tail=(tail+line+"\n").takeLast(20000);output.value=tail}},onStderr={line->synchronized(this){tail=(tail+"stderr: "+line+"\n").takeLast(20000);output.value=tail}})
+        val serving=CompletableDeferred<JSONObject>()
+        if(action=="serve" || action=="stop")modelHealthy.value=false
+        val running=executor().executeStreaming("bash /root/morsllm.sh $action$argument",onStdout={line->synchronized(this){
+            tail=(tail+line+"\n").takeLast(20000);output.value=tail
+            if(action=="serve")runCatching{JSONObject(line)}.getOrNull()?.let{if(it.optBoolean("ok") && it.optBoolean("ready"))serving.complete(it)}
+        }},onStderr={line->synchronized(this){tail=(tail+"stderr: "+line+"\n").takeLast(20000);output.value=tail}})
         handle=running
-        val exit=withContext(Dispatchers.IO){running.awaitExit()}
-        val json=tail.lines().lastOrNull{it.trim().startsWith("{")}.orEmpty()
-        val parsed=runCatching{JSONObject(json)}.getOrNull()
+        // PRoot may keep its tracer alive while the served model is a tracee.
+        // Readiness is the script's real HTTP health result, not tracer exit.
+        val exited=scope.async { runInterruptible(Dispatchers.IO){running.awaitExit()} }
+        var parsed:JSONObject?=null
+        val exit=try {
+            if(action=="serve")withTimeout(330000){select<Int>{
+                serving.onAwait{parsed=it;modelServerHandle=running;0}
+                exited.onAwait{it}
+            }} else exited.await()
+        } catch(e:CancellationException){
+            running.cancel()
+            exited.cancel()
+            if(action=="serve")withContext(NonCancellable+Dispatchers.IO){
+                executor().execute("bash /root/morsllm.sh stop",10)
+                modelHealthy.value=false
+            }
+            throw e
+        }
+        if(parsed==null){val json=synchronized(this){tail.lines().lastOrNull{it.trim().startsWith("{")}.orEmpty()};parsed=runCatching{JSONObject(json)}.getOrNull()}
+        if(action=="serve" && parsed?.optBoolean("ready")==true){
+            modelHealthy.value=true
+            scope.launch { exited.await();if(modelServerHandle===running){modelServerHandle=null;modelHealthy.value=false} }
+        }
+        if(action=="stop"){modelServerHandle?.cancel();modelServerHandle=null;modelHealthy.value=false}
+        if(action=="status")modelHealthy.value=parsed?.optBoolean("ready")==true
         if(exit!=0 || parsed?.optBoolean("ok")!=true){
             val logPath=parsed?.optString("log_path").orEmpty().ifBlank{parsed?.optString("log").orEmpty()}
             val prefix="/root/.morsvitaest/llm/"
@@ -109,7 +175,12 @@ class OpenMineRuntime private constructor(private val context:Context) {
             }
             error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: ${parsed?.optString("detail").orEmpty()}. See retained output.")
         }
-        _status.value=if(action=="serve")"Model health check passed; AI Chat can use http://127.0.0.1:8080/v1" else "Engine $action completed"
+        _status.value=when(action){
+            "serve"->"Model health check passed; AI Chat can use http://127.0.0.1:8080/v1"
+            "status"->if(modelHealthy.value)"Model HTTP health check passed" else if(parsed?.optBoolean("running")==true)"Model process exists but is not healthy" else "Model is stopped"
+            "stop"->"Model stopped"
+            else->"Engine execution verified"
+        }
     }
     fun importModel(uri:Uri)=run("Importing GGUF model"){
         val partial=File(modelDir,UUID.randomUUID().toString()+".part")

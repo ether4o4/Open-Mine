@@ -462,6 +462,11 @@ UI_H_EOF
 
     cp "$built" "$LLAMA_SERVER"
     chmod +x "$LLAMA_SERVER"
+    if ! timeout 10 "$LLAMA_SERVER" --version >"$cmake_log" 2>&1; then
+        emit "{\"ok\":false,\"error\":\"built_engine_execution_failed\",\"log_path\":\"$cmake_log\"}"
+        provision_emitted=1
+        return 1
+    fi
     log "provision: done -> $LLAMA_SERVER"
     emit "{\"ok\":true,\"path\":\"$LLAMA_SERVER\"}"
     provision_emitted=1
@@ -575,122 +580,140 @@ cmd_list_models() {
     emit "{\"ok\":true,\"models\":$out}"
 }
 
+# PID files survive restarts while Linux PIDs are reused. Check both argv[0]
+# and the kernel process start time before sending any signal.
+server_start_ticks() {
+    local stat
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    printf '%s\n' "${stat##*) }" | awk '{print $20}'
+}
+server_is_live() {
+    local pid="$1" stat
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+    stat="${stat##*) }"
+    [[ "$stat" != Z* && "$stat" != X* ]]
+}
+server_is_owned() {
+    local pid="$1" executable expected_ticks actual_ticks
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 1
+    server_is_live "$pid" || return 1
+    IFS= read -r -d '' executable < "/proc/$pid/cmdline" || return 1
+    [ "$executable" = "$LLAMA_SERVER" ] || return 1
+    expected_ticks=$(jq -r '.start_ticks // empty' "$META_FILE" 2>/dev/null || true)
+    if [ -n "$expected_ticks" ]; then
+        actual_ticks=$(server_start_ticks "$pid") || return 1
+        [ "$expected_ticks" = "$actual_ticks" ] || return 1
+    fi
+}
+server_health() {
+    curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:$1/health" 2>/dev/null |
+        jq -e '.status == "ok"' >/dev/null 2>&1
+}
+
 cmd_serve() {
-    local model="${1:-}"
-    local port="$DEFAULT_PORT"
+    require_jq
+    local model="${1:-}" port="$DEFAULT_PORT"
     [ $# -gt 0 ] && shift
     while [ $# -gt 0 ]; do
         case "$1" in
-            --port) port="$2"; shift 2 ;;
-            *) shift ;;
+            --port) [ $# -ge 2 ] || { emit '{"ok":false,"error":"missing_port"}'; return 1; }; port="$2"; shift 2 ;;
+            *) emit '{"ok":false,"error":"unknown_serve_option"}'; return 1 ;;
         esac
     done
-    if [ -z "$model" ]; then
-        emit '{"ok":false,"error":"missing_model"}'
-        return 1
+    if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        emit '{"ok":false,"error":"invalid_port"}'; return 1
     fi
+    if [ -z "$model" ]; then emit '{"ok":false,"error":"missing_model"}'; return 1; fi
     local model_path="$MODELS_DIR/$model"
     [ -f "$model_path" ] || model_path="$model"
-    if [ ! -f "$model_path" ]; then
-        emit "{\"ok\":false,\"error\":\"model_not_found\",\"model\":\"$model\"}"
-        return 1
+    if ! is_gguf "$model_path"; then
+        jq -nc --arg model "$model" '{ok:false,error:"invalid_or_missing_gguf",model:$model}'; return 1
     fi
     if [ ! -x "$LLAMA_SERVER" ]; then
-        emit '{"ok":false,"error":"not_provisioned","hint":"run: morsllm provision"}'
-        return 1
+        emit '{"ok":false,"error":"not_provisioned","hint":"run: morsllm provision"}'; return 1
     fi
+    # Do not continue if a saved PID refers to an unrelated live process.
+    local stopped
+    if ! stopped=$(cmd_stop); then emit "$stopped"; return 1; fi
 
-    # Replace any prior server on this port.
-    cmd_stop >/dev/null 2>&1 || true
-
-    log "serve: launching llama-server on 127.0.0.1:$port"
-    local log_file="$LOGS_DIR/server.log"
+    local log_file="$LOGS_DIR/server.log" ncpu threads
     : > "$log_file"
-    # Phone CPUs are big.LITTLE: handing llama.cpp every core (including the slow
-    # efficiency cluster) makes it SLOWER, not faster, because the fast cores
-    # stall each layer waiting on the slow ones. Drop ~2 cores on >4-core chips,
-    # floor 2. Also cap context at 4096 so the KV cache stays small on a phone.
-    local ncpu threads
     ncpu=$(nproc 2>/dev/null || echo 4)
-    if [ "$ncpu" -gt 4 ]; then
-        threads=$((ncpu - 2))
-    else
-        threads="$ncpu"
-    fi
-    [ "$threads" -lt 2 ] && threads=2
-    log "serve: using $threads of $ncpu cores, ctx 4096"
-    nohup "$LLAMA_SERVER" \
-        --host 127.0.0.1 \
-        --port "$port" \
-        --alias local \
-        -m "$model_path" \
-        --n-gpu-layers 0 \
-        --threads "$threads" \
-        --ctx-size 4096 \
-        >"$log_file" 2>&1 &
+    if [ "$ncpu" -gt 4 ]; then threads=$((ncpu - 2)); else threads="$ncpu"; fi
+    [ "$threads" -lt 1 ] && threads=1
+    log "serve: launching llama-server on 127.0.0.1:$port with $threads threads"
+    nohup "$LLAMA_SERVER" --host 127.0.0.1 --port "$port" --alias local -m "$model_path" \
+        --n-gpu-layers 0 --threads "$threads" --ctx-size 4096 >"$log_file" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
-    cat > "$META_FILE" <<EOF
-{"pid":$pid,"port":$port,"model":"$model","model_path":"$model_path","started":"$(date -u +%FT%TZ)"}
-EOF
-
-    log "serve: waiting for /health (large models can take a few minutes to load)"
-    local elapsed=0
-    while [ $elapsed -lt 300 ]; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            log "serve: process died early; see $log_file"
-            rm -f "$PID_FILE"
-            emit "{\"ok\":false,\"error\":\"server_died\",\"log\":\"$log_file\"}"
-            return 1
+    jq -nc --argjson pid "$pid" --argjson port "$port" --arg model "$model" \
+        --arg path "$model_path" --arg ticks "$(server_start_ticks "$pid" || true)" \
+        --arg started "$(date -u +%FT%TZ)" \
+        '{pid:$pid,port:$port,model:$model,model_path:$path,start_ticks:$ticks,started:$started}' > "$META_FILE"
+    # Only a successfully health-checked server outlives this startup command.
+    trap 'cmd_stop >/dev/null 2>&1 || true' EXIT
+    trap 'exit 130' INT TERM HUP
+    local budget="${MORSLLM_HEALTH_TIMEOUT:-300}"
+    [[ "$budget" =~ ^[0-9]{1,3}$ ]] && [ "$budget" -ge 1 ] && [ "$budget" -le 300 ] || budget=300
+    local deadline=$((SECONDS + budget))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if ! server_is_live "$pid"; then
+            jq -nc --arg log "$log_file" '{ok:false,error:"server_died",log_path:$log}'; return 1
         fi
-        if curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            log "serve: ready"
-            emit "{\"ok\":true,\"pid\":$pid,\"port\":$port,\"model\":\"$model\",\"base_url\":\"http://127.0.0.1:$port/v1\"}"
+        if server_is_owned "$pid" && server_health "$port"; then
+            trap - EXIT INT TERM HUP
+            log "serve: health check passed"
+            jq -nc --argjson pid "$pid" --argjson port "$port" --arg model "$model" \
+                --arg url "http://127.0.0.1:$port/v1" '{ok:true,ready:true,pid:$pid,port:$port,model:$model,base_url:$url}'
             return 0
         fi
         sleep 1
-        elapsed=$((elapsed + 1))
     done
-    emit "{\"ok\":false,\"error\":\"health_timeout\",\"pid\":$pid,\"hint\":\"Model not ready after 5 min — it may be too large for this device's free RAM. Try a smaller model or quant. Log: $log_file\"}"
+    jq -nc --arg log "$log_file" '{ok:false,error:"health_timeout",log_path:$log,hint:"Model did not become healthy within the startup budget and was stopped. Try a smaller model."}'
     return 1
 }
 
 cmd_stop() {
+    require_jq
     if [ -f "$PID_FILE" ]; then
-        local pid; pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        local pid; pid=$(cat "$PID_FILE" 2>/dev/null || true)
+        if server_is_live "$pid"; then
+            if ! server_is_owned "$pid"; then
+                emit '{"ok":false,"error":"server_identity_unverified","detail":"Saved PID belongs to a different process; no signal was sent."}'; return 1
+            fi
             kill "$pid" 2>/dev/null || true
             sleep 1
-            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-            log "stop: killed pid=$pid"
+            # Re-check identity after the grace period; the old process may exit
+            # and its PID may already refer to something else.
+            if server_is_owned "$pid"; then kill -9 "$pid" 2>/dev/null || true; fi
+            log "stop: stopped owned server pid=$pid"
         fi
         rm -f "$PID_FILE" "$META_FILE"
     fi
-    emit '{"ok":true}'
+    emit '{"ok":true,"running":false,"ready":false}'
 }
 
 cmd_status() {
-    local running=false
-    local pid=""
-    local port=""
-    local model=""
-    local base_url=""
+    require_jq
+    local running=false ready=false provisioned=false pid="" port="" model="" base_url=""
     if [ -f "$PID_FILE" ]; then
-        pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        pid=$(cat "$PID_FILE" 2>/dev/null || true)
+        if server_is_owned "$pid"; then
             running=true
-            if [ -f "$META_FILE" ] && command -v jq >/dev/null 2>&1; then
-                port=$(jq -r .port "$META_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
-                model=$(jq -r .model "$META_FILE" 2>/dev/null || echo "")
+            port=$(jq -r '.port // 8080' "$META_FILE" 2>/dev/null || echo "$DEFAULT_PORT")
+            model=$(jq -r '.model // empty' "$META_FILE" 2>/dev/null || true)
+            if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
                 base_url="http://127.0.0.1:$port/v1"
+                if server_health "$port"; then ready=true; fi
             fi
-        else
-            rm -f "$PID_FILE"
         fi
     fi
-    local provisioned=false
-    [ -x "$LLAMA_SERVER" ] && provisioned=true
-    emit "{\"ok\":true,\"provisioned\":$provisioned,\"running\":$running,\"pid\":\"$pid\",\"port\":\"$port\",\"model\":\"$model\",\"base_url\":\"$base_url\"}"
+    if [ -x "$LLAMA_SERVER" ] && timeout 10 "$LLAMA_SERVER" --version >/dev/null 2>&1; then provisioned=true; fi
+    jq -nc --argjson provisioned "$provisioned" --argjson running "$running" --argjson ready "$ready" \
+        --arg pid "$pid" --arg port "$port" --arg model "$model" --arg url "$base_url" \
+        '{ok:true,provisioned:$provisioned,running:$running,ready:$ready,pid:$pid,port:$port,model:$model,base_url:$url}'
 }
 
 usage() {

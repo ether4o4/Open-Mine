@@ -34,4 +34,11 @@ class ObjectFormatTest {
         assertFalse(OpenMineObjectFormat.validate(record().raw.replace("knowledge.engine-notes", "../../outside")).valid)
         assertFalse(OpenMineObjectFormat.validate(record().raw.replace(Regex("OBJECT_CREATED: [^\\n]+"), "OBJECT_CREATED: yesterday")).valid)
     }
+    @Test fun rejectsControlCharactersOversizeAndUnpairedUnicodeWithoutChangingValidCrLf() {
+        assertFalse(OpenMineObjectFormat.validate(record().raw.replace("Check oil", "Check\u0000oil")).valid)
+        assertFalse(OpenMineObjectFormat.validate(record().raw.replace("Check oil", "Check\roil")).valid)
+        assertFalse(OpenMineObjectFormat.validate(record().raw.replace("Check oil", "\uD800")).valid)
+        assertFalse(OpenMineObjectFormat.validate("x".repeat(OpenMineObjectFormat.MAX_RECORD_BYTES + 1)).valid)
+        assertTrue(OpenMineObjectFormat.validate(record().raw.replace("\n", "\r\n")).valid)
+    }
 }

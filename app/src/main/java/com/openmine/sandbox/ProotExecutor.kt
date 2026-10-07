@@ -7,8 +7,10 @@ import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
 
 private const val MAX_OUTPUT_LENGTH = 15_000
+private val streamReaders = Executors.newCachedThreadPool { task -> Thread(task, "openmine-shell-output").apply { isDaemon = true } }
 private const val DEFAULT_TIMEOUT_SECONDS = 120L
 private const val MAX_TIMEOUT_SECONDS = 1800L
 
@@ -21,19 +23,19 @@ class ProotHandle internal constructor(
 
     fun cancel() {
         cancelled.set(true)
-        runCatching { process.inputStream.close() }
-        runCatching { process.errorStream.close() }
-        runCatching { process.outputStream.close() }
+        // Destroy before closing pipes: closing a pipe being read can otherwise
+        // block while the child is still alive, freezing Cancel on the UI thread.
         process.destroyForcibly()
+        runCatching { process.outputStream.close() }
     }
 
-    fun writeInput(line: String) {
-        if (cancelled.get()) return
-        runCatching {
+    fun writeInput(line: String): Boolean {
+        if (cancelled.get() || !process.isAlive) return false
+        return runCatching {
             val bytes = (line + "\n").toByteArray()
             process.outputStream.write(bytes)
             process.outputStream.flush()
-        }
+        }.isSuccess
     }
 
     fun awaitExit(timeoutMinutes: Long = 30): Int {
@@ -43,7 +45,8 @@ class ProotHandle internal constructor(
         // so reader futures can sit waiting on a tracee pipe even after SIGKILL.
         while (!cancelled.get() && process.isAlive) {
             if (timeoutMinutes > 0 && System.nanoTime() >= deadline) { cancel(); return 124 }
-            runCatching { process.waitFor(200, TimeUnit.MILLISECONDS) }
+            try { process.waitFor(200, TimeUnit.MILLISECONDS) }
+            catch (e: InterruptedException) { cancel(); throw e }
         }
         if (cancelled.get()) return -1
         readerFutures.forEach { runCatching { it.get(500, TimeUnit.MILLISECONDS) } }
@@ -57,6 +60,9 @@ class ProotExecutor(
     private val rootfsPath: String,
     private val homePath: String,
     private val tmpPath: String,
+    internal val processStarter: (Array<String>, Array<String>, File?) -> Process = { args, env, directory ->
+        Runtime.getRuntime().exec(args, env, directory)
+    },
 ) {
 
     fun execute(
@@ -68,19 +74,15 @@ class ProotExecutor(
         val effectiveTimeout = timeoutSeconds.coerceIn(1, MAX_TIMEOUT_SECONDS)
 
         return try {
-            val process = Runtime.getRuntime().exec(
+            val process = processStarter(
                 buildProcessArgs(command, workingDir),
                 buildEnvVars(extraEnv),
                 File(rootfsPath).parentFile,
             )
 
             // Drain stdout/stderr concurrently to avoid pipe buffer deadlock
-            val stdoutFuture = CompletableFuture.supplyAsync {
-                readBounded(process.inputStream.bufferedReader())
-            }
-            val stderrFuture = CompletableFuture.supplyAsync {
-                readBounded(process.errorStream.bufferedReader())
-            }
+            val stdoutFuture = CompletableFuture.supplyAsync({ readBounded(process.inputStream.bufferedReader()) }, streamReaders)
+            val stderrFuture = CompletableFuture.supplyAsync({ readBounded(process.errorStream.bufferedReader()) }, streamReaders)
 
             val completed = process.waitFor(effectiveTimeout, TimeUnit.SECONDS)
 
@@ -88,8 +90,8 @@ class ProotExecutor(
                 process.destroyForcibly()
                 return mapOf(
                     "success" to false,
-                    "stdout" to stdoutFuture.get(1, TimeUnit.SECONDS).smartTruncate(MAX_OUTPUT_LENGTH),
-                    "stderr" to stderrFuture.get(1, TimeUnit.SECONDS).smartTruncate(MAX_OUTPUT_LENGTH),
+                    "stdout" to runCatching { stdoutFuture.get(1, TimeUnit.SECONDS) }.getOrDefault(""),
+                    "stderr" to runCatching { stderrFuture.get(1, TimeUnit.SECONDS) }.getOrDefault(""),
                     "exit_code" to -1,
                     "timed_out" to true,
                 )
@@ -97,8 +99,8 @@ class ProotExecutor(
 
             mapOf(
                 "success" to (process.exitValue() == 0),
-                "stdout" to stdoutFuture.get().smartTruncate(MAX_OUTPUT_LENGTH),
-                "stderr" to stderrFuture.get().smartTruncate(MAX_OUTPUT_LENGTH),
+                "stdout" to runCatching { stdoutFuture.get(2, TimeUnit.SECONDS) }.getOrDefault(""),
+                "stderr" to runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault(""),
                 "exit_code" to process.exitValue(),
                 "timed_out" to false,
             )
@@ -117,18 +119,18 @@ class ProotExecutor(
         onStdout: (String) -> Unit,
         onStderr: (String) -> Unit,
     ): ProotHandle {
-        val process = Runtime.getRuntime().exec(
+        val process = processStarter(
             buildProcessArgs(command, workingDir),
             buildEnvVars(extraEnv),
             File(rootfsPath).parentFile,
         )
         val cancelled = AtomicBoolean(false)
-        val stdoutFuture = CompletableFuture.runAsync {
+        val stdoutFuture = CompletableFuture.runAsync({
             streamLines(process.inputStream.bufferedReader(), cancelled, onStdout)
-        }
-        val stderrFuture = CompletableFuture.runAsync {
+        }, streamReaders)
+        val stderrFuture = CompletableFuture.runAsync({
             streamLines(process.errorStream.bufferedReader(), cancelled, onStderr)
-        }
+        }, streamReaders)
         return ProotHandle(process, cancelled, listOf(stdoutFuture, stderrFuture))
     }
 
@@ -175,7 +177,7 @@ class ProotExecutor(
             // Stream closed under us (typically destroyForcibly on timeout).
             // Return what we have so the timed_out path can surface a clean result.
         }
-        return sb.toString()
+        return sb.toString().take(MAX_OUTPUT_LENGTH)
     }
 
     private fun streamLines(
@@ -184,19 +186,28 @@ class ProotExecutor(
         onLine: (String) -> Unit,
     ) {
         try {
+            // readLine() can allocate an unbounded line (binary output, minified
+            // JSON, `yes | tr -d '\n'`). Emit bounded chunks while still draining.
+            val line = StringBuilder()
             while (!cancelled.get()) {
-                val line = try {
-                    reader.readLine()
-                } catch (e: IOException) {
-                    if (cancelled.get()) break
-                    throw e
-                } ?: break
-                onLine(line)
+                val next = reader.read()
+                if (next < 0) break
+                if (next == '\n'.code) {
+                    onLine(line.toString().removeSuffix("\r"))
+                    line.setLength(0)
+                } else {
+                    line.append(next.toChar())
+                    if (line.length >= MAX_OUTPUT_LENGTH) {
+                        onLine(line.toString()); line.setLength(0)
+                    }
+                }
             }
+            if (line.isNotEmpty()) onLine(line.toString())
+        } catch (e: IOException) {
+            if (!cancelled.get()) throw e
         } finally {
             runCatching { reader.close() }
         }
     }
 }
 
-private fun String.smartTruncate(limit: Int): String = take(limit)
