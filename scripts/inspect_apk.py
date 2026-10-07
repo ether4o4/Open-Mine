@@ -50,6 +50,11 @@ def main():
     assert package.groups() == ('com.openmine', '5', '0.3.0-dev'), 'Unexpected package or upgrade version'
     cert = re.search(r'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)', signing)
     assert cert, 'Cannot read APK signer certificate'
+    test_apk = args.apk.parent.parent / 'androidTest/debug/app-debug-androidTest.apk'
+    test_signing = subprocess.check_output([str(args.build_tools / 'apksigner'), 'verify', '--print-certs', str(test_apk)], text=True, stderr=subprocess.STDOUT)
+    test_cert = re.search(r'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)', test_signing)
+    assert test_cert and test_cert.group(1).lower() == cert.group(1).lower(), 'App/test APK signing identities differ'
+    (args.output / 'instrumentation-apk-signature.txt').write_text(test_signing)
     native = {}
     with zipfile.ZipFile(args.apk) as archive:
         for name in sorted(archive.namelist()):
@@ -66,15 +71,16 @@ def main():
         'source_commit': args.commit, 'variant': 'debug', 'package': package.group(1),
         'version_code': int(package.group(2)), 'version_name': package.group(3),
         'apk_file': args.apk.name, 'apk_bytes': args.apk.stat().st_size, 'apk_sha256': checksum,
+        'instrumentation_apk_sha256': hashlib.sha256(test_apk.read_bytes()).hexdigest(),
         'signer_certificate_sha256': cert.group(1).lower(), 'signature_verification': 'passed apksigner verify',
         'minimum_sdk': re.search(r"sdkVersion:'([^']+)'", badging).group(1),
         'target_sdk': re.search(r"targetSdkVersion:'([^']+)'", badging).group(1),
         'packaged_abis': abi_list, 'native_libraries': native,
         'packaged_shell_sha256': hashlib.sha256(shell).hexdigest(),
-        'upgrade_compatibility': 'UNVERIFIED: existing installed signing identity/private signing key unavailable; never uninstall or clear data to bypass a signature mismatch.',
+        'upgrade_compatibility': 'A new signing identity was explicitly authorized. Existing differently signed installations cannot be updated with this APK. Preserve user data; do not uninstall or clear it automatically.',
         'abi_runtime_coverage': 'See Android test artifacts. Packaging an ABI does not prove it runs.',
         'inference_status': 'UNVERIFIED unless separate actual GGUF/Ollama runtime evidence establishes it; no fixture result is inference evidence.',
-        'distribution': 'Development APK only. CI debug signing keys are not stable upgrade/release credentials.',
+        'distribution': 'Development APK only. New signing-key backup is encrypted in signing-backup.cms; retain the matching recovered key for future updates.',
     }
     (args.output / 'apk-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     (args.output / 'app-debug.apk.sha256').write_text(f'{checksum}  app-debug.apk\n')

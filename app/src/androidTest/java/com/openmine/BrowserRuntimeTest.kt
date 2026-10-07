@@ -8,6 +8,8 @@ import android.webkit.WebView
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -26,6 +28,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.io.Closeable
+import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -57,16 +60,19 @@ class BrowserRuntimeTest {
         assertTrue(javascript("document.body.textContent").contains(fixture.nonce))
         javascript("document.getElementById('next').click()")
         awaitTitle("Second page")
-        compose.onNodeWithContentDescription("Previous page").performClick()
+        assertHistory("/second", back = true, forward = false)
+        compose.onNodeWithContentDescription("Previous page").assertIsEnabled().performClick()
         awaitTitle("First page")
-        compose.onNodeWithContentDescription("Next page").performClick()
+        assertHistory("/first", back = false, forward = true)
+        compose.onNodeWithContentDescription("Next page").assertIsEnabled().performClick()
         awaitTitle("Second page")
 
         // Destroys/recreates the composable and WebView using the actual saved-state Bundle.
         // This exercises saved-state recovery, not a claim of full OS process-death coverage.
         restoration.emulateSavedInstanceStateRestore()
         awaitTitle("Second page")
-        compose.onNodeWithContentDescription("Previous page").performClick()
+        assertHistory("/second", back = true, forward = false)
+        compose.onNodeWithContentDescription("Previous page").assertIsEnabled().performClick()
         awaitTitle("First page")
         assertTrue(javascript("document.body.textContent").contains(fixture.nonce))
     }
@@ -144,11 +150,46 @@ class BrowserRuntimeTest {
     }
 
     private fun awaitTitle(title: String, complete: Boolean = true) {
-        compose.waitUntil(15_000) {
-            var loaded = false
-            compose.runOnIdle { webViewOrNull()?.let { loaded = it.title == title && (!complete || it.progress == 100) } }
-            loaded
+        try {
+            compose.waitUntil(15_000) {
+                var loaded = false
+                compose.runOnIdle { webViewOrNull()?.let { loaded = it.title == title && (!complete || it.progress == 100) } }
+                loaded
+            }
+        } catch (failure: Throwable) {
+            val details = nativeHistory()
+            File(context.filesDir, "browser-runtime-failure.txt").writeText("Waiting for: $title\n$details")
+            throw AssertionError("Browser did not reach '$title': $details", failure)
         }
+    }
+
+    private fun assertHistory(path: String, back: Boolean, forward: Boolean) {
+        var actualUrl: String? = null
+        var actualBack = false
+        var actualForward = false
+        compose.runOnIdle {
+            val view = checkNotNull(webViewOrNull())
+            val history = view.copyBackForwardList()
+            actualUrl = history.currentItem?.url
+            actualBack = history.currentIndex > 0
+            actualForward = history.currentIndex < history.size - 1
+        }
+        val details = nativeHistory()
+        assertEquals(details, fixture.url(path), actualUrl)
+        assertEquals(details, back, actualBack)
+        assertEquals(details, forward, actualForward)
+        if(back)compose.onNodeWithContentDescription("Previous page").assertIsEnabled() else compose.onNodeWithContentDescription("Previous page").assertIsNotEnabled()
+        if(forward)compose.onNodeWithContentDescription("Next page").assertIsEnabled() else compose.onNodeWithContentDescription("Next page").assertIsNotEnabled()
+    }
+
+    private fun nativeHistory(): String {
+        var details = "No attached WebView"
+        compose.runOnIdle { webViewOrNull()?.let { view ->
+            val history=view.copyBackForwardList()
+            details="url=${view.url}; title=${view.title}; progress=${view.progress}; index=${history.currentIndex}; entries="+
+                (0 until history.size).joinToString { index -> "$index:${history.getItemAtIndex(index).url}" }
+        }}
+        return details
     }
 
     private fun javascript(script: String): String {

@@ -62,6 +62,7 @@ private class AssistantSessionController private constructor(private val context
     @Volatile private var reviewGate:ReviewGate?=null
     @Volatile private var activeTurnId:String?=null
     private val _state=MutableStateFlow(load())
+    private val checkpoint=RevisionedCheckpoint(_state.value.session,store::save)
     val state:StateFlow<AssistantUiState> = _state
 
     private fun load():AssistantUiState=try{
@@ -70,14 +71,34 @@ private class AssistantSessionController private constructor(private val context
         AssistantUiState(session)
     }catch(e:Exception){AssistantUiState(AssistantSession(),storageError="Cannot read saved assistant sessions: ${e.message}",loadBlocked=true)}
 
-    @Synchronized private fun change(update:(AssistantUiState)->AssistantUiState){_state.value=update(_state.value)}
+    @Synchronized private fun change(update:(AssistantUiState)->AssistantUiState){
+        val previous=_state.value
+        val next=update(previous)
+        if(next.session!==previous.session)checkpoint.update(next.session)
+        _state.value=next
+    }
     private fun saveSoon(){
         // Throttle rather than debounce: a long stream is checkpointed even while tokens keep arriving.
-        synchronized(this){if(saveJob?.isActive==true)return;saveJob=scope.launch{delay(350);persist()}}
+        synchronized(this){
+            if(saveJob!=null)return
+            saveJob=scope.launch{
+                delay(350)
+                while(true){
+                    val saved=persist()
+                    // Change detection and worker retirement share the same lock as session edits.
+                    // An edit after retirement starts a new worker; an edit during a write is flushed.
+                    val finished=synchronized(this@AssistantSessionController){
+                        if(!saved || !checkpoint.isDirty){saveJob=null;true}else false
+                    }
+                    if(finished)break
+                    delay(350)
+                }
+            }
+        }
     }
     private suspend fun persist():Boolean=storageMutex.withLock{
         if(_state.value.loadBlocked)return@withLock false
-        try{store.save(_state.value.session);change{it.copy(storageError=null)};true}
+        try{checkpoint.flush();change{it.copy(storageError=null)};true}
         catch(e:Exception){change{it.copy(storageError="Session could not be saved: ${e.message}. Keep the app open and retry saving.")};false}
     }
     fun retryStorage(){scope.launch{if(_state.value.loadBlocked){change{load()}}else persist()}}

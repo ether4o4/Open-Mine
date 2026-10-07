@@ -5,3 +5,6 @@ local.properties
 *.hprof
 *.jks
 *.keystore
+*.p12
+*-private.pem
+signing-backup/

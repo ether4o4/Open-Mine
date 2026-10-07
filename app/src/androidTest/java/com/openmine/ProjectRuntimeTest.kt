@@ -6,6 +6,7 @@ import android.graphics.drawable.AdaptiveIconDrawable
 import android.view.WindowManager
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -47,6 +48,7 @@ class ProjectRuntimeTest {
         compose.onNodeWithText("Save task").performClick()
         awaitTaskCount(1)
         val initialId = store.tasks().single().id
+        awaitEnabled("Complete")
         compose.onNodeWithText("Complete").performClick()
         compose.waitUntil(10_000) { store.tasks().singleOrNull()?.status == ProjectTaskStatus.DONE }
 
@@ -78,15 +80,17 @@ class ProjectRuntimeTest {
         awaitText("Files (1)")
         compose.onNodeWithText("Files (1)").performClick()
         compose.onNodeWithText("View / edit text").performClick()
-        awaitText("File contents")
+        awaitEnabled("File contents")
         compose.onNodeWithText("File contents").performTextReplacement("Recovered local draft")
         compose.waitUntil(10_000) { store.readDraft("notes.txt")?.text == "Recovered local draft" }
         restoration.emulateSavedInstanceStateRestore()
         awaitText("Recovered the unsaved local draft")
         compose.onNodeWithText("Recovered local draft").assertIsDisplayed()
+        awaitEnabled("Save")
         compose.onNodeWithText("Save").performClick()
         compose.waitUntil(10_000) { store.readText("notes.txt") == "Recovered local draft" }
         assertNull(store.readDraft("notes.txt"))
+        awaitEnabled("File contents")
 
         val file = File(context.filesDir, "open_mine_projects/$id/files/notes.txt")
         val priorTime = file.lastModified()
@@ -131,6 +135,9 @@ class ProjectRuntimeTest {
     }
 
     private fun awaitTaskCount(count: Int) = compose.waitUntil(10_000) { store.tasks().size == count }
+    private fun awaitEnabled(text: String) = compose.waitUntil(10_000) {
+        runCatching { compose.onNodeWithText(text).assertIsEnabled(); true }.getOrDefault(false)
+    }
     private fun awaitText(text: String, substring: Boolean = false) = compose.waitUntil(10_000) {
         compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty()
     }

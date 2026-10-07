@@ -53,10 +53,10 @@ class RootfsDownloader {
                 downloadFrom(url, targetFile, onProgress)
                 val checksumConnection = java.net.URL("$url.sha256").openConnection() as java.net.HttpURLConnection
                 activeConnections.add(checksumConnection)
-                currentCoroutineContext().ensureActive()
                 checksumConnection.connectTimeout = 15000
                 checksumConnection.readTimeout = 30000
                 val expected = try {
+                    currentCoroutineContext().ensureActive()
                     check(checksumConnection.responseCode == 200) { "Rootfs checksum unavailable" }
                     checksumConnection.inputStream.bufferedReader().use { it.readLine().trim().split(Regex("\\s+")).first() }
                 } finally { activeConnections.remove(checksumConnection); checksumConnection.disconnect() }

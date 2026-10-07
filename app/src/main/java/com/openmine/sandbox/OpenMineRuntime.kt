@@ -119,9 +119,9 @@ class OpenMineRuntime private constructor(private val context:Context) {
         if(result["shell_died"]!=true) File(base,"terminal-cwd.txt").writeText(result["cwd"].toString())
         _status.value=if(result["success"]==true)"Command finished" else "Command failed; inspect exit code and output"
     }
-    fun systemInfo():String {
+    fun systemInfo(checkCancelled:()->Unit = {}):String {
         check(ready){"Linux shell needs setup; no command ran."}
-        val result=executor().execute("uname -a",10)
+        val result=executor().execute("uname -a",10,checkCancelled=checkCancelled)
         check(result["success"]==true){"System information command failed: ${result["exit_code"]}"}
         return result["stdout"].toString()
     }
@@ -162,8 +162,6 @@ class OpenMineRuntime private constructor(private val context:Context) {
             modelHealthy.value=true
             scope.launch { exited.await();if(modelServerHandle===running){modelServerHandle=null;modelHealthy.value=false} }
         }
-        if(action=="stop"){modelServerHandle?.cancel();modelServerHandle=null;modelHealthy.value=false}
-        if(action=="status")modelHealthy.value=parsed?.optBoolean("ready")==true
         if(exit!=0 || parsed?.optBoolean("ok")!=true){
             val logPath=parsed?.optString("log_path").orEmpty().ifBlank{parsed?.optString("log").orEmpty()}
             val prefix="/root/.morsvitaest/llm/"
@@ -175,6 +173,8 @@ class OpenMineRuntime private constructor(private val context:Context) {
             }
             error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: ${parsed?.optString("detail").orEmpty()}. See retained output.")
         }
+        if(action=="stop"){modelServerHandle?.cancel();modelServerHandle=null;modelHealthy.value=false}
+        if(action=="status")modelHealthy.value=parsed?.optBoolean("ready")==true
         _status.value=when(action){
             "serve"->"Model health check passed; AI Chat can use http://127.0.0.1:8080/v1"
             "status"->if(modelHealthy.value)"Model HTTP health check passed" else if(parsed?.optBoolean("running")==true)"Model process exists but is not healthy" else "Model is stopped"

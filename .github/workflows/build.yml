@@ -9,39 +9,41 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  TESTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
 concurrency:
   group: open-mine-verify-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
-    env:
-      TESTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    timeout-minutes: 25
     steps:
       - name: Check out the exact source commit
         uses: actions/checkout@v4
         with:
           ref: ${{ env.TESTED_COMMIT }}
-
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Gradle caching
         uses: gradle/actions/setup-gradle@v4
-
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
-
       - name: Install build SDK packages
         run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
-
       - name: Record source and run shell verification
         run: |
           mkdir -p verification
@@ -51,22 +53,67 @@ jobs:
           test ! -s verification/source-status.txt
           bash -n app/src/main/assets/sandbox/morsllm.sh
           python3 app/src/test/scripts/test_engine_lifecycle.py 2>&1 | tee verification/python-tests.txt
-
+      - name: Create the user-authorized new signing identity and encrypted backup
+        run: bash scripts/create_signing_key.sh
       - name: Run final-source unit tests, lint, and build APKs
         run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
-
       - name: Inspect the exact APK and record identity evidence
         run: |
           python3 scripts/verify_packaged_shell.py app/build/outputs/apk/debug/app-debug.apk | tee verification/packaged-shell.txt
           python3 scripts/inspect_apk.py app/build/outputs/apk/debug/app-debug.apk --build-tools "$ANDROID_HOME/build-tools/35.0.0" --commit "$TESTED_COMMIT" --output verification
+      - name: Upload standalone APK for direct delivery
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-APK-${{ env.TESTED_COMMIT }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve identical signed APKs for emulator jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-build-${{ env.TESTED_COMMIT }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            verification/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload unit, lint, and shell reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-build-reports-${{ env.TESTED_COMMIT }}
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            verification/
+          if-no-files-found: warn
+          retention-days: 14
 
+  android-runtime:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TESTED_COMMIT }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: Open-Mine-build-${{ env.TESTED_COMMIT }}
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Verify the downloaded artifact identity
+        run: python3 scripts/check_apk_checksum.py
+      - name: Prepare real hosted Ollama server and model
+        run: bash scripts/prepare_ollama_runtime.sh
       - name: Enable hosted emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-
-      - name: Run Android runtime and integration checks
+      - name: Verify API29 application journeys and real Ollama client
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
@@ -74,29 +121,101 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-boot-timeout: 600
-          script: bash scripts/run_android_checks.sh
-
-      - name: Upload exact tested development APK and evidence
+          script: |
+            bash scripts/run_android_checks.sh
+            bash scripts/run_restart_checks.sh
+            bash scripts/run_ollama_checks.sh
+      - name: Upload API29 runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Open-Mine-development-${{ env.TESTED_COMMIT }}
+          name: Open-Mine-runtime-evidence-${{ env.TESTED_COMMIT }}
           path: |
-            app/build/outputs/apk/debug/app-debug.apk
             verification/
             docs/INTEGRATION_ACCEPTANCE.md
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload complete test and lint reports
+  android-modern-ui:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TESTED_COMMIT }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: Open-Mine-build-${{ env.TESTED_COMMIT }}
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Verify the same signed artifact identity
+        run: python3 scripts/check_apk_checksum.py
+      - name: Enable hosted emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify API35 HUD, accessibility, keyboard and project journeys
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          OPENMINE_TEST_CLASSES: com.openmine.HudIntegrationTest,com.openmine.ProjectRuntimeTest
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-boot-timeout: 600
+          script: bash scripts/run_android_checks.sh
+      - name: Upload API35 UI and platform evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Open-Mine-test-reports-${{ env.TESTED_COMMIT }}
-          path: |
-            app/build/reports/
-            app/build/test-results/
-            app/build/outputs/androidTest-results/
-            verification/
+          name: Open-Mine-API35-${{ env.TESTED_COMMIT }}
+          path: verification/
+          if-no-files-found: warn
+          retention-days: 14
+
+  android-native-inference:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TESTED_COMMIT }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: Open-Mine-build-${{ env.TESTED_COMMIT }}
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Verify identical signed APK identity
+        run: python3 scripts/check_apk_checksum.py
+      - name: Download and verify pinned public GGUF weights
+        run: python3 scripts/prepare_gguf_model.py
+      - name: Enable hosted emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run real Android Linux shell and GGUF inference
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          profile: pixel_2
+          ram-size: 4096M
+          disk-size: 8G
+          disable-animations: true
+          emulator-boot-timeout: 600
+          script: bash scripts/run_native_checks.sh
+      - name: Upload actual Android shell and inference evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Mine-native-runtime-${{ env.TESTED_COMMIT }}
+          path: verification/
           if-no-files-found: warn
           retention-days: 14

@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -220,6 +222,6 @@ private fun recordType(screen: Int): String? = when (screen) {
 @Composable private fun Setting(title: String, detail: String, value: Boolean, onChange: (Boolean) -> Unit, tag: String) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) { Text(title); Text(detail, style = MaterialTheme.typography.bodySmall) }
-        Switch(value, onChange, Modifier.testTag(tag))
+        Switch(value, onChange, Modifier.testTag(tag).semantics { contentDescription = title })
     }
 }

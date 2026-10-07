@@ -134,8 +134,34 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     val webView = webViewResult.getOrNull()
 
     fun updateHistory(view: WebView) {
-        canBack = view.canGoBack()
-        canForward = view.canGoForward()
+        if (session.view !== view || rendererGone) return
+        val history = view.copyBackForwardList()
+        canBack = history.currentIndex > 0
+        canForward = history.currentIndex >= 0 && history.currentIndex < history.size - 1
+    }
+
+    fun scheduleHistoryUpdate(view: WebView) {
+        updateHistory(view)
+        // Providers may commit their native history after delivering a navigation callback.
+        view.post { if (session.view === view && !rendererGone) updateHistory(view) }
+    }
+
+    fun traverseHistory(offset: Int): Boolean {
+        val view = session.view ?: return false
+        if (rendererGone || clearing) return false
+        val history = view.copyBackForwardList()
+        val target = history.currentIndex + offset
+        if (target !in 0 until history.size) { updateHistory(view); return false }
+        focus.clearFocus()
+        keyboard?.hide()
+        error = null
+        notice = null
+        userStopped = false
+        pendingScroll = 0
+        // Traverse the explicit entry shown by the toolbar, including script-created navigation.
+        view.goBackOrForward(offset)
+        scheduleHistoryUpdate(view)
+        return true
     }
 
     fun destroy(view: WebView) {
@@ -181,7 +207,16 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     }
 
     fun retry() {
-        if (currentUrl.isNotBlank()) navigate(currentUrl)
+        if (currentUrl.isNotBlank()) {
+            if (webView == null || rendererGone) navigate(currentUrl)
+            else {
+                error = null
+                notice = null
+                userStopped = false
+                pendingScroll = webView.scrollY
+                webView.reload()
+            }
+        }
         else if (webView == null || rendererGone) {
             rendererGone = false
             generation++
@@ -191,7 +226,7 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     BackHandler {
         when {
             addressFocused -> { focus.clearFocus(); keyboard?.hide() }
-            canBack && !rendererGone -> { error = null; webView?.goBack() }
+            traverseHistory(-1) -> Unit
             else -> onExit()
         }
     }
@@ -235,10 +270,10 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { error = null; webView?.goBack() }, enabled = canBack && !rendererGone && !clearing) {
+            IconButton(onClick = { traverseHistory(-1) }, enabled = canBack && !rendererGone && !clearing) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Previous page")
             }
-            IconButton(onClick = { error = null; webView?.goForward() }, enabled = canForward && !rendererGone && !clearing) {
+            IconButton(onClick = { traverseHistory(1) }, enabled = canForward && !rendererGone && !clearing) {
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, "Next page")
             }
             IconButton(onClick = {
@@ -322,12 +357,14 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                                 error = null
                                 currentUrl = url.orEmpty()
                                 if (!addressFocused) draft = currentUrl
-                                updateHistory(view)
+                                scheduleHistoryUpdate(view)
                             }
                             override fun onPageFinished(view: WebView, url: String?) {
                                 if (session.view !== view) return
+                                scheduleHistoryUpdate(view)
+                                // A late finish from the previous page must not overwrite a newer URL/load.
+                                if (url != null && url != view.url) return
                                 loading = false
-                                updateHistory(view)
                                 if (url != "about:blank") {
                                     currentUrl = url.orEmpty()
                                     if (!addressFocused) draft = currentUrl
@@ -343,11 +380,16 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                             }
                             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                                 if (session.view !== view) return
-                                updateHistory(view)
+                                scheduleHistoryUpdate(view)
                                 if (url != null && url != "about:blank") {
                                     currentUrl = url
                                     if (!addressFocused) draft = url
                                 }
+                            }
+                            override fun onPageCommitVisible(view: WebView, url: String?) {
+                                if (session.view !== view) return
+                                scheduleHistoryUpdate(view)
+                                pageTitle = view.title.orEmpty()
                             }
                             override fun onReceivedError(view: WebView, request: WebResourceRequest, failure: WebResourceError) {
                                 if (session.view === view && request.isForMainFrame && !userStopped) {
@@ -374,8 +416,12 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                             }
                         }
                         webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView, newProgress: Int) { if (session.view === view) progress = newProgress }
-                            override fun onReceivedTitle(view: WebView, title: String?) { if (session.view === view) pageTitle = title.orEmpty() }
+                            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                                if (session.view === view) { progress = newProgress; scheduleHistoryUpdate(view) }
+                            }
+                            override fun onReceivedTitle(view: WebView, title: String?) {
+                                if (session.view === view) { pageTitle = title.orEmpty(); scheduleHistoryUpdate(view) }
+                            }
                             override fun onPermissionRequest(request: PermissionRequest) {
                                 request.deny()
                                 notice = "Website camera and microphone access is unavailable in this browser."
@@ -419,6 +465,10 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                         val saved = session.restored
                         session.restored = null
                         val restored = saved?.getBundle("web")?.let { restoreState(it) } != null
+                        if (restored) {
+                            pageTitle = title.orEmpty()
+                            scheduleHistoryUpdate(this)
+                        }
                         if (!restored && currentUrl.isNotBlank()) {
                             runCatching { BrowserPolicy.navigation(currentUrl) }.onSuccess { loadUrl(it) }
                                 .onFailure { error = it.message }

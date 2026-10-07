@@ -94,6 +94,9 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
                 }
             } catch (cancelled: CancellationException) {
                 status = "Operation cancelled. Changes already saved remain in the workspace."
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    runCatching { refresh() }.onFailure { error = "Could not refresh after cancellation: ${it.message}" }
+                }
                 throw cancelled
             } catch (failure: Exception) {
                 error = failure.message ?: "Operation failed"
@@ -310,8 +313,12 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
     }, confirmButton = { TextButton({ runAction("Saving task") { runInterruptible(Dispatchers.IO) { store.saveTask(taskId, taskTitle, taskNotes, ProjectTaskStatus.valueOf(taskStatus)) }; taskEditor = false; "Task saved" } }, enabled = busy.isEmpty() && taskTitle.isNotBlank()) { Text("Save task") } }, dismissButton = { TextButton({ taskEditor = false }, enabled = busy.isEmpty()) { Text("Cancel") } })
     if (newFile || importUri != null) {
         val importing = importUri != null
-        AlertDialog(onDismissRequest = { if (busy.isEmpty()) { newFile = false; importUri = null; saveCopy = false } }, title = { Text(if (importing) "Import file" else if (saveCopy) "Save draft as a new file" else "New text file") }, text = {
-            Column { OutlinedTextField(if (importing) importName else newName, { if (importing) importName = it else newName = it }, label = { Text("Filename") }, singleLine = true, enabled = busy.isEmpty()); if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error) }
+        AlertDialog(onDismissRequest = { if (busy.isEmpty()) { newFile = false; importUri = null; saveCopy = false } else operation?.cancel() }, title = { Text(if (importing) "Import file" else if (saveCopy) "Save draft as a new file" else "New text file") }, text = {
+            Column {
+                OutlinedTextField(if (importing) importName else newName, { if (importing) importName = it else newName = it }, label = { Text("Filename") }, singleLine = true, enabled = busy.isEmpty())
+                if (busy.isNotEmpty()) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(busy) }
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+            }
         }, confirmButton = { TextButton({
             val name = if (importing) importName else newName
             val selected = importUri
@@ -326,11 +333,11 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
                 saveCopy = false
                 "$name saved to this project"
             }
-        }, enabled = busy.isEmpty() && (!saveCopy || editorLoaded)) { Text(if (importing) "Import" else "Create") } }, dismissButton = { TextButton({ newFile = false; importUri = null; saveCopy = false }, enabled = busy.isEmpty()) { Text("Cancel") } })
+        }, enabled = busy.isEmpty() && (!saveCopy || editorLoaded)) { Text(if (importing) "Import" else "Create") } }, dismissButton = { TextButton({ if (busy.isNotEmpty()) operation?.cancel() else { newFile = false; importUri = null; saveCopy = false } }) { Text(if (busy.isNotEmpty()) "Cancel operation" else "Cancel") } })
     }
-    deleteTask?.let { task -> ProjectDeleteDialog("Delete task “${task.title}”?", busy.isNotEmpty(), { deleteTask = null }) { runAction("Deleting task") { runInterruptible(Dispatchers.IO) { store.deleteTask(task.id) }; deleteTask = null; "Task deleted" } } }
-    deleteFile?.let { file -> ProjectDeleteDialog("Delete “${file.name}” and its saved draft?", busy.isNotEmpty(), { deleteFile = null }) { runAction("Deleting file") { runInterruptible(Dispatchers.IO) { store.deleteFile(file.name) }; deleteFile = null; "File deleted" } } }
-    if (discardDraft) ProjectDeleteDialog("Discard unsaved changes? The last saved file will be restored.", busy.isNotEmpty(), { discardDraft = false }) {
+    deleteTask?.let { task -> ProjectDeleteDialog("Delete task “${task.title}”?", busy.isNotEmpty(), { deleteTask = null }, error) { runAction("Deleting task") { runInterruptible(Dispatchers.IO) { store.deleteTask(task.id) }; deleteTask = null; "Task deleted" } } }
+    deleteFile?.let { file -> ProjectDeleteDialog("Delete “${file.name}” and its saved draft?", busy.isNotEmpty(), { deleteFile = null }, error) { runAction("Deleting file") { runInterruptible(Dispatchers.IO) { store.deleteFile(file.name) }; deleteFile = null; "File deleted" } } }
+    if (discardDraft) ProjectDeleteDialog("Discard unsaved changes? The last saved file will be restored.", busy.isNotEmpty(), { discardDraft = false }, error) {
         val name = editorName ?: return@ProjectDeleteDialog
         runAction("Restoring saved file") {
             draftWriteJob?.cancelAndJoin()
@@ -356,6 +363,8 @@ private suspend fun <T> projectDraftIo(action: () -> T): T = withContext(Dispatc
     catch (failure: java.util.concurrent.ExecutionException) { throw (failure.cause ?: failure) }
 }
 
-@Composable private fun ProjectDeleteDialog(message: String, busy: Boolean, dismiss: () -> Unit, confirm: () -> Unit) {
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text("Confirm deletion") }, text = { Text(message) }, confirmButton = { TextButton(confirm, enabled = !busy) { Text("Delete") } }, dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+@Composable private fun ProjectDeleteDialog(message: String, busy: Boolean, dismiss: () -> Unit, error: String, confirm: () -> Unit) {
+    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text("Confirm deletion") }, text = {
+        Column { Text(message); if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error) }
+    }, confirmButton = { TextButton(confirm, enabled = !busy) { Text("Delete") } }, dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }

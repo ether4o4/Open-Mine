@@ -94,7 +94,7 @@ object ModelClient {
                             sources.addAll(matches)
                             matches.joinToString("\n"){it.raw}.take(10000).ifBlank{"No matching sources."}
                         }
-                        "linux_system_info"->runCatching{com.openmine.sandbox.OpenMineRuntime.get(c).systemInfo()}
+                        "linux_system_info"->runCatching{com.openmine.sandbox.OpenMineRuntime.get(c).systemInfo { control.checkActive() }}
                             .getOrElse{"Tool failed; no successful result: ${it.message}"}
                         else->error("Unsupported capability; no tool ran.")
                     }

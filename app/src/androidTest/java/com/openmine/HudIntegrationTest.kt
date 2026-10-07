@@ -124,8 +124,8 @@ class HudIntegrationTest {
         preferences.edit().putInt("screen", 0).putBoolean("animations", true).commit()
         launch()
         navigate(11)
-        awaitTag("settings-animations")
-        compose.onNodeWithTag("settings-animations").performClick()
+        awaitTag("setting-animations")
+        compose.onNodeWithTag("setting-animations").performClick()
         compose.waitUntil(10_000) { !preferences.getBoolean("animations", true) }
         navigate(0)
         awaitDetail("Motion test model")
@@ -137,8 +137,8 @@ class HudIntegrationTest {
         awaitDetail("Motion test model")
         assertFalse(preferences.getBoolean("animations", true))
         navigate(11)
-        awaitTag("settings-animations")
-        compose.onNodeWithTag("settings-animations").assertIsOff()
+        awaitTag("setting-animations")
+        compose.onNodeWithTag("setting-animations").assertIsOff()
         navigate(10)
         capture("hud-diagnostics-native")
         navigate(3)
@@ -156,6 +156,21 @@ class HudIntegrationTest {
         compose.onNodeWithContentDescription("Back to workspace").performClick()
         awaitTag("accessible-workspace")
         capture("hud-large-font")
+    }
+
+    @Test fun corruptLibrarySessionCanExitWithoutOverwritingTheRecoveryFile() {
+        val file = File(context.filesDir, "library-sessions/connector.json")
+        file.parentFile!!.mkdirs()
+        val damaged = "test-created interrupted session bytes"
+        file.writeText(damaged)
+        preferences.edit().putInt("screen", 2).putString("route", "library:2").commit()
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            compose.waitUntil(15_000) { compose.onAllNodesWithText("Cannot restore library session", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("Back to workspace").performClick()
+            awaitTag("hud-root")
+            assertEquals(damaged, file.readText())
+        } finally { file.delete() } // Remove only this test-created corrupt fixture.
     }
 
     private fun launch() {
@@ -186,10 +201,12 @@ class HudIntegrationTest {
 
     private fun assertVisibleDockWithinViewport() {
         val root = compose.onNodeWithTag("hud-root").fetchSemanticsNode().boundsInRoot
+        val expectedHeight = 76f * minOf(root.width / 700f, root.height / 1280f)
         for (index in 0..5) {
             val dock = compose.onNodeWithTag("dock-$index").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             assertTrue("Dock $index extends beyond the HUD viewport: $dock / $root",
                 dock.left >= root.left - 1 && dock.top >= root.top - 1 && dock.right <= root.right + 1 && dock.bottom <= root.bottom + 1)
+            assertTrue("Dock $index was clipped vertically", dock.height >= expectedHeight - 2f)
         }
     }
 
@@ -210,6 +227,7 @@ class HudIntegrationTest {
             .put("fingerprint", Build.FINGERPRINT).put("width_px", bitmap.width).put("height_px", bitmap.height)
             .put("density", context.resources.displayMetrics.density).put("font_scale", context.resources.configuration.fontScale)
             .put("animations_preference", preferences.getBoolean("animations", true))
+            .put("system_animator_duration_scale", Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f))
             .put("fixture_notice", "Only test-created saved records; these captures do not prove model or connector operation")
         File(directory, "$name.json").writeText(evidence.toString(2))
     }

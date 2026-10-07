@@ -4,6 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 android {
+    val signingStorePath = System.getenv("OPEN_MINE_SIGNING_STORE")
+    if (!signingStorePath.isNullOrBlank()) {
+        signingConfigs.create("retainedDevelopment") {
+            storeFile = file(signingStorePath)
+            storePassword = System.getenv("OPEN_MINE_SIGNING_PASSWORD")
+            keyAlias = "open-mine"
+            keyPassword = System.getenv("OPEN_MINE_SIGNING_PASSWORD")
+            storeType = "PKCS12"
+        }
+        buildTypes.getByName("debug").signingConfig = signingConfigs.getByName("retainedDevelopment")
+    }
     namespace = "com.openmine"
     compileSdk = 36
     defaultConfig {
@@ -13,6 +24,7 @@ android {
         versionCode = 5
         versionName = "0.3.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
     buildFeatures { compose = true; buildConfig = true }
     packaging { jniLibs { useLegacyPackaging = true } }

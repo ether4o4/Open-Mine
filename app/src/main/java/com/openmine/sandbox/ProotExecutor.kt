@@ -70,21 +70,31 @@ class ProotExecutor(
         timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
         workingDir: String = "/root",
         extraEnv: Map<String, String> = emptyMap(),
+        checkCancelled: () -> Unit = {},
     ): Map<String, Any> {
         val effectiveTimeout = timeoutSeconds.coerceIn(1, MAX_TIMEOUT_SECONDS)
 
+        var activeProcess: Process? = null
         return try {
+            checkCancelled()
             val process = processStarter(
                 buildProcessArgs(command, workingDir),
                 buildEnvVars(extraEnv),
                 File(rootfsPath).parentFile,
             )
 
+            activeProcess = process
             // Drain stdout/stderr concurrently to avoid pipe buffer deadlock
             val stdoutFuture = CompletableFuture.supplyAsync({ readBounded(process.inputStream.bufferedReader()) }, streamReaders)
             val stderrFuture = CompletableFuture.supplyAsync({ readBounded(process.errorStream.bufferedReader()) }, streamReaders)
 
-            val completed = process.waitFor(effectiveTimeout, TimeUnit.SECONDS)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(effectiveTimeout)
+            while (process.isAlive && System.nanoTime() < deadline) {
+                checkCancelled()
+                process.waitFor(100, TimeUnit.MILLISECONDS)
+            }
+            checkCancelled()
+            val completed = !process.isAlive
 
             if (!completed) {
                 process.destroyForcibly()
@@ -104,11 +114,19 @@ class ProotExecutor(
                 "exit_code" to process.exitValue(),
                 "timed_out" to false,
             )
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw e
+        } catch (e: java.util.concurrent.CancellationException) {
+            throw e
         } catch (e: Exception) {
             mapOf(
                 "success" to false,
                 "error" to (e.message ?: "Failed to execute command in sandbox"),
             )
+        } finally {
+            // Cancellation/interrupt must not abandon a live PRoot process.
+            if (activeProcess?.isAlive == true) activeProcess.destroyForcibly()
         }
     }
 

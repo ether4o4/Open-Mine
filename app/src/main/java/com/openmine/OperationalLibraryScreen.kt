@@ -108,6 +108,7 @@ fun OperationalLibraryScreen(
     val session = draft.session
     val revision by OpenMineObjectStore.revision.collectAsState()
     val scope = rememberCoroutineScope()
+    val latestContextIds by rememberUpdatedState(contextIds)
     var snapshot by remember { mutableStateOf<KnowledgeStoreSnapshot?>(null) }
     var shown by remember { mutableStateOf<List<StrictObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -123,14 +124,38 @@ fun OperationalLibraryScreen(
     var validationErrors by remember { mutableStateOf<List<String>>(emptyList()) }
     val selected = snapshot?.records?.firstOrNull { it.id == session.selectedId && (category == null || it.type == category) }
 
-    fun runAction(label: String, action: suspend () -> String) {
+    suspend fun finishCommit(committed: LibraryCommitRecovery): String = committed.finish {
+        controller.retrySave()
+        controller.flush()
+    }
+    fun runAction(label: String, action: suspend (LibraryCommitRecovery) -> String) {
         if (busy.isNotBlank()) return
         busy = label; actionError = ""; message = ""
         retry = { runAction(label, action) }
         operation = scope.launch {
-            try { message = action(); retry = null; refresh += 1 }
-            catch (cancelled: CancellationException) { message = "Operation interrupted. Reload saved records to check its outcome."; refresh += 1; throw cancelled }
-            catch (error: Exception) { actionError = error.message ?: "Operation failed" }
+            val committed = LibraryCommitRecovery()
+            try { message = action(committed); retry = null; refresh += 1 }
+            catch (cancelled: CancellationException) {
+                if (committed.committedMessage != null) {
+                    try {
+                        message = withContext(NonCancellable) { finishCommit(committed) }
+                        retry = null
+                    } catch (failure: Exception) {
+                        actionError = "${committed.committedMessage} Workspace state still needs saving: ${failure.message}"
+                        retry = { runAction("Recovering workspace state") { finishCommit(committed) } }
+                    }
+                } else message = "Operation interrupted before success was recorded. Reload the library before retrying; an interrupted export can leave a partial destination."
+                refresh += 1
+                throw cancelled
+            }
+            catch (error: Exception) {
+                if (committed.committedMessage != null) {
+                    actionError = "${committed.committedMessage} Workspace state still needs saving: ${error.message}"
+                    // Only the post-commit workspace save is retried, never import/update/delete/export.
+                    retry = { runAction("Recovering workspace state") { finishCommit(committed) } }
+                    refresh += 1
+                } else actionError = error.message ?: "Operation failed"
+            }
             finally { busy = "" }
         }
     }
@@ -139,6 +164,7 @@ fun OperationalLibraryScreen(
     }
     fun back() {
         when {
+            !draft.loaded -> onBack()
             busy.isNotBlank() -> { message = "Wait for the current operation or use Cancel operation." }
             session.creating -> controller.update { it.copy(creating = false) }
             session.editorActive -> leaveEditor()
@@ -169,16 +195,19 @@ fun OperationalLibraryScreen(
         if (uri == null) { message = "Import cancelled." }
         else {
             runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            runAction("Importing and indexing") {
+            runAction("Importing and indexing") { committed ->
                 val raw = runInterruptible(Dispatchers.IO) { readLibraryImport(context, uri) }
                 currentCoroutineContext().ensureActive()
                 val checked = withContext(Dispatchers.IO) { OpenMineObjectFormat.validate(raw) }
                 require(checked.valid) { checked.errors.joinToString("\n") }
                 require(category == null || checked.normalized!!.type == category) { "This view accepts $category records. Use the all-record library to import ${checked.normalized!!.type}." }
-                val saved = withContext(NonCancellable + Dispatchers.IO) { OpenMineObjectStore.import(context, checked.normalized!!.raw) }
-                require(saved.valid) { saved.errors.joinToString("\n") }
-                controller.update { it.copy(selectedId = saved.normalized!!.id) }; controller.flush()
-                "Imported and indexed ${saved.normalized!!.title}."
+                withContext(NonCancellable + Dispatchers.IO) {
+                    val saved = OpenMineObjectStore.import(context, checked.normalized!!.raw)
+                    require(saved.valid) { saved.errors.joinToString("\n") }
+                    val imported = saved.normalized!!
+                    committed.markCommitted("Imported and indexed ${imported.title}.") { controller.update { it.copy(selectedId = imported.id) } }
+                }
+                finishCommit(committed)
             }
         }
     }
@@ -188,16 +217,16 @@ fun OperationalLibraryScreen(
             val loaded = controller.state.first { it.loaded || it.error.isNotBlank() }
             val id = loaded.session.exportId
             if (id == null) actionError = "No record was selected for export. Select a record and export again."
-            else runAction("Exporting canonical record") {
+            else runAction("Exporting canonical record") { committed ->
                 withContext(Dispatchers.IO) {
                     val record = OpenMineObjectStore.all(context).firstOrNull { it.id == id } ?: error("Record no longer exists")
                     try {
                         context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(record.raw.toByteArray(Charsets.UTF_8)); it.flush() }
                             ?: error("Cannot open export destination")
                     } catch (error: Exception) { throw IllegalStateException("Export failed; the destination may contain a partial file. Retry or choose another destination. ${error.message}", error) }
+                    committed.markCommitted("Canonical .omd record exported.") { controller.update { it.copy(exportId = null) } }
                 }
-                controller.update { it.copy(exportId = null) }; controller.flush()
-                "Canonical .omd record exported."
+                finishCommit(committed)
             }
         }
     }
@@ -236,13 +265,13 @@ fun OperationalLibraryScreen(
                 if (validationErrors.isNotEmpty()) item { Text(validationErrors.joinToString("\n"), color = MaterialTheme.colorScheme.error) }
                 item { Button({
                     val raw = session.rawDraft; val editId = session.editId; val base = session.editBaseRaw
-                    runAction("Validating and saving") {
+                    runAction("Validating and saving") { committed ->
                         val result = withContext(Dispatchers.IO) { OpenMineObjectFormat.validate(raw) }
                         if (!result.valid) { validationErrors = result.errors; error("Validation failed. Draft retained; correct the labeled fields below.") }
                         require(category == null || result.normalized!!.type == category) { "Record type must remain $category in this category." }
                         currentCoroutineContext().ensureActive()
-                        val saved = withContext(NonCancellable + Dispatchers.IO) {
-                            if (editId == null) OpenMineObjectStore.import(context, result.normalized!!.raw)
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            val saved = if (editId == null) OpenMineObjectStore.import(context, result.normalized!!.raw)
                             else {
                                 val original = OpenMineObjectStore.all(context).firstOrNull { it.id == editId } ?: error("Record no longer exists; your draft is preserved.")
                                 require(original.raw == base) { "This record changed after editing began. Your draft is preserved; compare it with the latest saved record before replacing it." }
@@ -251,10 +280,13 @@ fun OperationalLibraryScreen(
                                 sections["OPEN_MINE_OBJECT"] = normalized.fields + ("OBJECT_UPDATED" to OpenMineObjectFormat.now())
                                 OpenMineObjectStore.update(context, editId, OpenMineObjectFormat.serialize(normalized.copy(sections = sections)))
                             }
+                            require(saved.valid) { saved.errors.joinToString("\n") }
+                            val record = saved.normalized!!
+                            committed.markCommitted("Saved and indexed ${record.title}.") {
+                                controller.update { it.copy(selectedId = record.id, editorActive = false, editId = null, rawDraft = "", editBaseRaw = "", creating = false, createTitle = "", createSummary = "") }
+                            }
                         }
-                        require(saved.valid) { saved.errors.joinToString("\n") }
-                        controller.update { it.copy(selectedId = saved.normalized!!.id, editorActive = false, editId = null, rawDraft = "", editBaseRaw = "", creating = false, createTitle = "", createSummary = "") }
-                        controller.flush(); "Saved and indexed ${saved.normalized!!.title}."
+                        finishCommit(committed)
                     }
                 }, Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("library-save-record"), enabled = busy.isBlank()) { Text("VALIDATE + SAVE RECORD") } }
                 item { OutlinedButton(::leaveEditor, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = busy.isBlank()) { Text("Keep draft and return to library") } }
@@ -332,15 +364,17 @@ fun OperationalLibraryScreen(
         confirmButton = { TextButton({ controller.update { it.copy(rawDraft = "", editBaseRaw = "", editId = null, editorActive = false) }; validationErrors = emptyList(); discardDraft = false }) { Text("Discard draft") } }, dismissButton = { TextButton({ discardDraft = false }) { Text("Keep draft") } })
     deleteRecord?.let { record -> AlertDialog(onDismissRequest = { deleteRecord = null }, title = { Text("Delete ${record.title}?") },
         text = { Text("This deletes ${record.id} and removes its retrieval entries. Export it first if you need a copy. Project files, model weights and other records are preserved.") },
-        confirmButton = { TextButton({ deleteRecord = null; runAction("Deleting record") {
+        confirmButton = { TextButton({ deleteRecord = null; runAction("Deleting record") { committed ->
             withContext(NonCancellable + Dispatchers.IO) {
                 val current = OpenMineObjectStore.all(context).firstOrNull { it.id == record.id } ?: error("Record already removed")
                 require(current.raw == record.raw) { "Record changed since you selected it. Reload and review before deleting." }
                 OpenMineObjectStore.delete(context, current)
+                committed.markCommitted("Deleted ${record.title}; retrieval index updated.") {
+                    controller.update { it.copy(selectedId = null) }
+                    if (record.id in latestContextIds) onToggleContext(record)
+                }
             }
-            controller.update { it.copy(selectedId = null) }; controller.flush()
-            if (record.id in contextIds) onToggleContext(record)
-            "Deleted ${record.title}; retrieval index updated."
+            finishCommit(committed)
         } }) { Text("Delete record") } }, dismissButton = { TextButton({ deleteRecord = null }) { Text("Cancel") } }) }
 }
 
