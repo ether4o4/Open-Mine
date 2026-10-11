@@ -4,7 +4,7 @@ Spatial AI workspace foundation.
 
 ## Latest APK
 
-**[Download Open Mine for Android — 0.4.0-dev](https://drive.google.com/file/d/148NBA-B9KRKLZvPryHx8bVoJUk3UX5zg/view)**
+**[Download Open Mine for Android — 0.4.1-dev](https://drive.google.com/file/d/12siB5tumckPtduMRV6yC86NryhKmf1pE/view)**
 
 **[Bookmark the rolling download section](https://github.com/ether4o4/Open-Mine#latest-apk).**
 This section is the current-build entry point. Update its APK and verification
@@ -17,18 +17,22 @@ The Drive download may require the Google account with access to the shared file
 
 | Current build | Details |
 | --- | --- |
-| Version | `0.4.0-dev` · version code `10` · development APK |
+| Version | `0.4.1-dev` · version code `11` · development APK |
 | Updated | 2026-10-11 |
 | Package | `com.openmine` |
-| Source commit | `a9c7536031f684e6fec3925e5e572ea4ae841261` |
-| APK SHA-256 | `86682a3964bb50c548cdb0825903e3ba9c5540408f8222b62c7182faf8e11eae` |
+| Source commit | `710f589ac8b250b8b38025d57b2c22693c789005` |
+| APK SHA-256 | `179d668cf54ae719dc8635dfafde682a617374ded43cce54f9d4ea008ad0aa87` |
 
-[Verification notes, source and checksums](https://drive.google.com/file/d/1kWmfwJtN1C0FVPVL5t0qBzNPdKHMaVl2/view)
-· [UI preview](https://drive.google.com/file/d/1UUTtdq6lAHNr3WMVkXckdrL8diYegQtf/view)
+[Source bundle](https://drive.google.com/file/d/1f4eghCG-xH8DHodAiy48Emu4y2M-kyPp/view)
+· [Restored HUD screenshot](https://drive.google.com/file/d/14wmiyhon8h70df7SiHYWbr-W6KZWCdqX/view)
 
-This build makes Chat a primary destination, sharpens the glass UI, preserves
-shell installation labels and improves draft recovery. Build and lint checks,
-109 unit tests and 21 Android test cases passed across the recorded runs.
+This corrects the rejected 0.4.0 redesign. The approved orbital HUD, original
+artwork, side rail, six-button dock, colors, typography and utility layouts are
+restored. Persistent installation labels, chat connection fixes and draft
+protection are retained. This is a higher-version update over 0.4.0.
+
+Build and lint checks and 109 unit tests passed. The restored HUD renderer
+matches the pre-redesign source exactly, and rendered screenshots were inspected.
 Physical S24 Ultra testing and offline on-device GGUF generation remain unverified;
 the earlier Alpine compiler-installation issue remains outstanding.
 
