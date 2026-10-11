@@ -20,10 +20,11 @@ The Drive download may require the Google account with access to the shared file
 | Version | `0.4.1-dev` · version code `11` · development APK |
 | Updated | 2026-10-11 |
 | Package | `com.openmine` |
-| Source commit | `710f589ac8b250b8b38025d57b2c22693c789005` |
+| Source commit | `21a33b8451241494d7b6c4f6a1d2296315f2bd8d` |
 | APK SHA-256 | `179d668cf54ae719dc8635dfafde682a617374ded43cce54f9d4ea008ad0aa87` |
 
-[Source bundle](https://drive.google.com/file/d/1f4eghCG-xH8DHodAiy48Emu4y2M-kyPp/view)
+[Verification notes](https://drive.google.com/file/d/19up5rYEtkujeFPXHWrQ1nmaN4W67P2DB/view)
+· [Source bundle](https://drive.google.com/file/d/14r5fDTTG8n2gpPxFU42vtKQ_pEq8JDac/view)
 · [Restored HUD screenshot](https://drive.google.com/file/d/14wmiyhon8h70df7SiHYWbr-W6KZWCdqX/view)
 
 This corrects the rejected 0.4.0 redesign. The approved orbital HUD, original
@@ -31,8 +32,10 @@ artwork, side rail, six-button dock, colors, typography and utility layouts are
 restored. Persistent installation labels, chat connection fixes and draft
 protection are retained. This is a higher-version update over 0.4.0.
 
-Build and lint checks and 109 unit tests passed. The restored HUD renderer
-matches the pre-redesign source exactly, and rendered screenshots were inspected.
+Build and lint checks, 109 unit tests and 19 distinct Android cases passed across
+the recorded runs. The restored HUD renderer matches the pre-redesign source
+exactly, and rendered screenshots were inspected. The verification notes retain
+earlier failures and explain the focused reruns and text-field callback checks.
 Physical S24 Ultra testing and offline on-device GGUF generation remain unverified;
 the earlier Alpine compiler-installation issue remains outstanding.
 
