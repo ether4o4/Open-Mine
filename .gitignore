@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.hprof
+*.jks
+*.keystore
+*.p12
+*-private.pem
+signing-backup/
+
+verification/
+
+__pycache__/
+*.pyc

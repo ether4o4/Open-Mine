@@ -1,0 +1,49 @@
+name: Publish verified Open Mine APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      verification_run_id:
+        description: Successful Verify Open Mine APK run ID (the signed APK is reused unchanged)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-mine-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out main and its source history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set up Java for APK signature verification
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up APK inspection tools (no build or signing)
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'build-tools;35.0.0'
+      - name: Validate and publish the exact previously tested APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFICATION_RUN_ID: ${{ inputs.verification_run_id }}
+        run: |
+          python3 scripts/publish_verified_release.py \
+            --run-id "$VERIFICATION_RUN_ID" \
+            --build-tools "$ANDROID_HOME/build-tools/35.0.0" \
+            --work-dir "$RUNNER_TEMP/open-mine-publication"

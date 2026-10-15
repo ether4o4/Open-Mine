@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Termux client for Open Mine's authenticated, loopback-only runtime bridge."""
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+
+ADDRESS = ("127.0.0.1", 8766)
+MAX_REQUEST_BYTES = 16384
+MAX_RESPONSE_BYTES = 1024 * 1024
+START_ACTION = "com.openmine.runtime.START"
+START_COMPONENT = "com.openmine/.sandbox.RuntimeControlReceiver"
+
+
+class BridgeError(Exception):
+    pass
+
+
+class UnreachableError(BridgeError):
+    pass
+
+
+def config_path():
+    return Path.home() / ".config" / "openmine" / "config.json"
+
+
+def valid_token(token):
+    return isinstance(token, str) and 32 <= len(token) <= 512 and not any(
+        ch.isspace() or ord(ch) < 32 for ch in token
+    )
+
+
+def configure(token):
+    if token is None:
+        token = getpass.getpass("Open Mine bridge token (hidden): ")
+    if not valid_token(token):
+        raise BridgeError("Invalid token. Copy the bridge token from Open Mine's runtime controls.")
+    path = config_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as out:
+            temporary_path = Path(out.name)
+            os.fchmod(out.fileno(), 0o600)
+            json.dump({"token": token}, out)
+            out.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    print("Open Mine bridge configured.")
+    return 0
+
+
+def load_token():
+    path = config_path()
+    try:
+        if path.stat().st_mode & 0o077:
+            raise BridgeError("Bridge config must be private; run chmod 600 ~/.config/openmine/config.json.")
+        token = json.loads(path.read_text())["token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise BridgeError("Configure the bridge first: openmine configure") from None
+    if not valid_token(token):
+        raise BridgeError("Invalid bridge configuration; run openmine configure again.")
+    return token
+
+
+def redact(value, token):
+    return str(value).replace(token, "[redacted]") if token else str(value)
+
+
+def request(token, action, timeout=10, **fields):
+    payload = json.dumps({"token": token, "action": action, **fields}).encode("utf-8") + b"\n"
+    if len(payload) > MAX_REQUEST_BYTES:
+        raise BridgeError("Request exceeds the bridge's 16384-byte limit.")
+    try:
+        with socket.create_connection(ADDRESS, timeout=min(2, timeout)) as connection:
+            connection.settimeout(timeout)
+            connection.sendall(payload)
+            with connection.makefile("rb") as stream:
+                raw = stream.readline(MAX_RESPONSE_BYTES + 1)
+    except OSError:
+        raise UnreachableError("Runtime bridge stopped or unreachable at 127.0.0.1:8766.") from None
+    if len(raw) > MAX_RESPONSE_BYTES or not raw.endswith(b"\n"):
+        raise BridgeError("Incomplete or oversized bridge response.")
+    try:
+        result = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise BridgeError("Invalid JSON response from runtime bridge.") from None
+    if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+        raise BridgeError("Invalid response from runtime bridge.")
+    if not result["ok"]:
+        raise BridgeError(redact(result.get("error", "Runtime request failed."), token))
+    return result
+
+
+def print_json(data, token):
+    print(redact(json.dumps(data, indent=2, ensure_ascii=False), token))
+
+
+def start(token, timeout):
+    # The explicit receiver authenticates the token before requesting its service.
+    # Android still decides whether this caller may start a foreground service.
+    try:
+        broadcast = subprocess.run(
+            ["/system/bin/am", "broadcast", "--user", "0", "-n", START_COMPONENT,
+             "-a", START_ACTION, "--es", "token", token],
+            capture_output=True, text=True, timeout=min(timeout, 10), check=False,
+        )
+    except FileNotFoundError:
+        raise BridgeError("Starting the runtime requires Android; run this command in Termux.") from None
+    except (OSError, subprocess.TimeoutExpired):
+        raise BridgeError("Android runtime start request failed or timed out.") from None
+    if broadcast.returncode != 0:
+        raise BridgeError("Android rejected the runtime start request. Open Termux in the foreground and retry.")
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            state = request(token, "status", timeout=min(2, remaining))
+        except UnreachableError:
+            pass
+        else:
+            # A successful broadcast does not establish startup or authentication.
+            if state.get("running") is True:
+                print_json(state, token)
+                return 0
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.25, remaining))
+    raise BridgeError(
+        "Runtime did not become reachable. Enable the bridge in Open Mine, check the token, "
+        "and retry with Termux visible. Android may restrict foreground service startup."
+    )
+
+
+def command_text(parts):
+    if len(parts) == 1:
+        return parts[0]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def shell_command(token, command, timeout):
+    response = request(token, "shell", timeout=timeout + 5, command=command, timeout_seconds=timeout)
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise BridgeError("Runtime returned no shell result.")
+    for field, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
+        output = redact(result.get(field, ""), token)
+        if output:
+            stream.write(output)
+            if not output.endswith("\n"):
+                stream.write("\n")
+            stream.flush()
+    code = result.get("exit_code")
+    if type(code) is not int:
+        raise BridgeError("Runtime returned no shell exit code.")
+    if result.get("success") is not True and code == 0:
+        return 1
+    return code if 0 <= code <= 255 else 1
+
+
+def shell(token, parts, timeout):
+    if parts:
+        return shell_command(token, command_text(parts), timeout)
+    interactive = sys.stdin.isatty()
+    if interactive:
+        print("Open Mine line shell; shared with the app. No PTY. Use :quit or Ctrl+D to leave.")
+    code = 0
+    while True:
+        try:
+            command = input("openmine$ " if interactive else "")
+        except EOFError:
+            return code
+        if command.strip() == ":quit":
+            return code
+        if command.strip():
+            code = shell_command(token, command, timeout)
+
+
+def bounded_seconds(value):
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("timeout must be an integer") from None
+    if not 1 <= seconds <= 1800:
+        raise argparse.ArgumentTypeError("timeout must be between 1 and 1800 seconds")
+    return seconds
+
+
+def parser():
+    result = argparse.ArgumentParser(description=__doc__)
+    commands = result.add_subparsers(dest="action", required=True)
+    configuration = commands.add_parser("configure", help="store the token copied from Open Mine")
+    configuration.add_argument("token", nargs="?", help="omit to enter privately without shell history")
+    startup = commands.add_parser("start", help="ask Android to start the runtime, then verify it")
+    startup.add_argument("--timeout", type=bounded_seconds, default=20, help="startup polling limit (default: 20s)")
+    commands.add_parser("status", help="show runtime and managed process status")
+    commands.add_parser("stop", help="stop the runtime and its Linux processes")
+    terminal = commands.add_parser("shell", help="run a command or enter the shared line shell (no PTY)")
+    terminal.add_argument("--timeout", type=bounded_seconds, default=1800, help="per-command limit (default: 1800s)")
+    terminal.add_argument("command", nargs=argparse.REMAINDER)
+    processes = commands.add_parser("process", help="control services owned by the runtime")
+    actions = processes.add_subparsers(dest="process_action", required=True)
+    launch = actions.add_parser("start", help="start a command that stays in the foreground")
+    launch.add_argument("command", nargs=argparse.REMAINDER)
+    terminate = actions.add_parser("stop", help="stop one managed process")
+    terminate.add_argument("id")
+    logs = actions.add_parser("logs", help="show bounded recent output for one managed process")
+    logs.add_argument("id")
+    actions.add_parser("list", help="list managed processes")
+    return result
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    token = None
+    try:
+        if args.action == "configure":
+            return configure(args.token)
+        token = load_token()
+        if args.action == "start":
+            return start(token, args.timeout)
+        if args.action == "shell":
+            return shell(token, args.command, args.timeout)
+        if args.action == "process":
+            if args.process_action == "start":
+                if not args.command:
+                    raise BridgeError("Provide a command, for example: openmine process start 'exec sleep 300'")
+                response = request(token, "process_start", command=command_text(args.command))
+            elif args.process_action == "stop":
+                response = request(token, "process_stop", id=args.id)
+            elif args.process_action == "logs":
+                response = request(token, "process_logs", id=args.id)
+            else:
+                response = {"processes": request(token, "status").get("processes", [])}
+            print_json(response, token)
+            return 0
+        try:
+            response = request(token, args.action)
+        except UnreachableError as error:
+            if args.action == "status":
+                print_json({"running": False, "state": "stopped_or_unreachable", "error": str(error)}, token)
+                return 1
+            raise
+        print_json(response, token)
+        return 0 if args.action != "status" or response.get("running") is True else 1
+    except KeyboardInterrupt:
+        print("\nInterrupted. A submitted shell command may continue until its timeout; use the app's Cancel control if needed.", file=sys.stderr)
+        return 130
+    except (BridgeError, OSError, EOFError) as error:
+        print("openmine: " + redact(error, token), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

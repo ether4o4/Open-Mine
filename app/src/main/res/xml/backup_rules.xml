@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Default inclusion retains projects, object library, assistant sessions, shell home,
+         terminal transcript/cwd and preferences. Android excludes cache/no-backup itself. -->
+    <exclude domain="file" path="linux-sandbox/rootfs"/>
+    <exclude domain="file" path="linux-sandbox/rootfs-staging"/>
+    <exclude domain="file" path="linux-sandbox/rootfs.tar.gz"/>
+    <exclude domain="file" path="linux-sandbox/rootfs.valid"/>
+    <exclude domain="file" path="linux-sandbox/ready"/>
+    <exclude domain="file" path="linux-sandbox/libtalloc.so.2"/>
+    <exclude domain="file" path="linux-sandbox/tmp"/>
+    <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/models"/>
+    <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/bin"/>
+    <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/build"/>
+    <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/run"/>
+    <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/logs"/>
+    <exclude domain="file" path="open_mine_index.json"/>
+</full-backup-content>

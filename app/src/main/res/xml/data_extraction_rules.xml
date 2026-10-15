@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="file" path="linux-sandbox/rootfs"/>
+        <exclude domain="file" path="linux-sandbox/rootfs-staging"/>
+        <exclude domain="file" path="linux-sandbox/rootfs.tar.gz"/>
+        <exclude domain="file" path="linux-sandbox/rootfs.valid"/>
+        <exclude domain="file" path="linux-sandbox/ready"/>
+        <exclude domain="file" path="linux-sandbox/libtalloc.so.2"/>
+        <exclude domain="file" path="linux-sandbox/tmp"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/models"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/bin"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/build"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/run"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/logs"/>
+        <exclude domain="file" path="open_mine_index.json"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="linux-sandbox/rootfs"/>
+        <exclude domain="file" path="linux-sandbox/rootfs-staging"/>
+        <exclude domain="file" path="linux-sandbox/rootfs.tar.gz"/>
+        <exclude domain="file" path="linux-sandbox/rootfs.valid"/>
+        <exclude domain="file" path="linux-sandbox/ready"/>
+        <exclude domain="file" path="linux-sandbox/libtalloc.so.2"/>
+        <exclude domain="file" path="linux-sandbox/tmp"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/models"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/bin"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/build"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/run"/>
+        <exclude domain="file" path="linux-sandbox/home/.morsvitaest/llm/logs"/>
+        <exclude domain="file" path="open_mine_index.json"/>
+    </device-transfer>
+</data-extraction-rules>

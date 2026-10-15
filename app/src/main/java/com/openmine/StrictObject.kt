@@ -1,12 +1,14 @@
 package com.openmine
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 
 data class StrictObject(val fields: Map<String,String>, val sections: Map<String,Map<String,String>>, val raw: String) {
     val id get() = fields["OBJECT_ID"].orEmpty()
@@ -17,6 +19,7 @@ data class StrictObject(val fields: Map<String,String>, val sections: Map<String
 data class ValidationResult(val valid:Boolean,val errors:List<String>,val normalized:StrictObject?=null)
 
 object OpenMineObjectFormat {
+    const val MAX_RECORD_BYTES = 1024 * 1024
     private val schema = linkedMapOf(
         "OPEN_MINE_OBJECT" to listOf("OBJECT_VERSION","OBJECT_ID","OBJECT_TYPE","OBJECT_STATUS","OBJECT_TITLE","OBJECT_SUMMARY","OBJECT_TAGS","OBJECT_SOURCE","OBJECT_CREATED","OBJECT_UPDATED"),
         "CONTEXT_INDEX" to listOf("INDEX_KEYWORDS","INDEX_ALIASES","INDEX_TRIGGERS","INDEX_SCOPE","INDEX_PRIORITY"),
@@ -47,8 +50,36 @@ object OpenMineObjectFormat {
     }
 
     fun validate(raw:String):ValidationResult {
+        if (raw.length > MAX_RECORD_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_RECORD_BYTES)
+            return ValidationResult(false, listOf("Object exceeds 1 MiB"))
+        if (raw.any { (it.code < 32 && it !in "\r\n\t") || it.code == 127 })
+            return ValidationResult(false, listOf("Object contains unsupported control characters"))
+        if (raw.replace("\r\n", "").contains('\r'))
+            return ValidationResult(false, listOf("Object contains an isolated carriage return"))
+        if (runCatching {
+                Charsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(raw))
+            }.isFailure) return ValidationResult(false, listOf("Object is not valid UTF-8 text"))
         val o = parse(raw)
         val e = mutableListOf<String>()
+        var section = ""
+        var ended = false
+        val seenSections = mutableSetOf<String>()
+        val seenLabels = mutableSetOf<String>()
+        raw.replace("\r", "").lines().forEachIndexed { index, original ->
+            val line = original.trim()
+            if (line.isBlank()) return@forEachIndexed
+            if (ended) { e.add("Content after END_OBJECT at line ${index + 1}."); return@forEachIndexed }
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length - 1)
+                if (section == "END_OBJECT") ended = true
+                else if (section !in schema || !seenSections.add(section)) e.add("Unknown or duplicate section at line ${index + 1}.")
+            } else {
+                val colon = line.indexOf(':')
+                val label = if (colon > 0) line.substring(0, colon).trim() else ""
+                if (label !in schema[section].orEmpty() || !seenLabels.add("$section.$label"))
+                    e.add("Unknown, duplicate or unlabeled content at line ${index + 1}.")
+            }
+        }
         schema.forEach { pair ->
             if (!o.sections.containsKey(pair.key)) e.add("Missing [" + pair.key + "] section.")
             pair.value.forEach { label ->
@@ -63,8 +94,14 @@ object OpenMineObjectFormat {
         if (!Regex("^[a-z0-9][a-z0-9._-]{2,100}$").matches(id)) e.add("OBJECT_ID format is invalid.")
         if (o.type !in types) e.add("OBJECT_TYPE is invalid.")
         if (o.status !in statuses) e.add("OBJECT_STATUS is invalid.")
+        if (o.title == "NONE") e.add("OBJECT_TITLE needs a meaningful value.")
         val vs = o.sections["VERIFICATION"]?.get("VERIFICATION_STATUS").orEmpty()
         if (vs !in statuses) e.add("VERIFICATION_STATUS is invalid.")
+        val priority = o.sections["CONTEXT_INDEX"]?.get("INDEX_PRIORITY")?.toIntOrNull()
+        if (priority == null || priority !in 0..100) e.add("INDEX_PRIORITY must be 0–100.")
+        listOf("OBJECT_CREATED", "OBJECT_UPDATED").forEach { label ->
+            if (runCatching { java.time.Instant.parse(o.fields[label]) }.isFailure) e.add("$label must be an ISO UTC timestamp.")
+        }
         return if (e.isEmpty()) ValidationResult(true,emptyList(),normalize(o)) else ValidationResult(false,e)
     }
 
@@ -88,7 +125,7 @@ object OpenMineObjectFormat {
     fun canonicalList(v:String):String = if (v.equals("NONE",true)) "NONE" else
         v.split(",").map{it.trim().lowercase(Locale.US)}.filter{it.isNotBlank()}.distinct().sorted().joinToString(", ")
 
-    fun now():String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).format(Date())
+    fun now():String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
 
     fun template(type:String,title:String,summary:String,tags:String,source:String,purpose:String,facts:String,procedure:String,constraints:String,examples:String,keywords:String,aliases:String,triggers:String,project:String,model:String,skill:String,tool:String,mission:String,query:String,whenText:String,exclude:String,verification:String,verificationSource:String,notes:String):StrictObject {
         val slug=title.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"),"-").trim('-').ifBlank{"object"}
@@ -102,55 +139,24 @@ object OpenMineObjectFormat {
             "RETRIEVAL" to linkedMapOf("RETRIEVAL_QUERY" to query,"RETRIEVAL_WHEN" to whenText,"RETRIEVAL_EXCLUDE" to exclude),
             "VERIFICATION" to linkedMapOf("VERIFICATION_STATUS" to verification,"VERIFICATION_SOURCE" to verificationSource,"VERIFICATION_NOTES" to notes)
         )
-        return normalize(StrictObject(s["OPEN_MINE_OBJECT"].orEmpty(),s,""))
+        val safe = s.mapValues { (_, fields) -> fields.mapValues { (_, value) -> value.replace(Regex("[\\r\\n]+"), " ").ifBlank { "NONE" } } }
+        return normalize(StrictObject(safe["OPEN_MINE_OBJECT"].orEmpty(),safe,""))
     }
 }
 
 object OpenMineObjectStore {
-    private const val DIR="open_mine_objects"
-    private const val INDEX="open_mine_index.json"
-    private fun dir(c:Context)=File(c.filesDir,DIR).apply{mkdirs()}
-
-    fun all(c:Context):List<StrictObject> = dir(c).listFiles()?.filter{it.extension=="omd"}?.mapNotNull {
-        runCatching{OpenMineObjectFormat.validate(it.readText()).normalized}.getOrNull()
-    }?.filterNotNull()?.sortedBy{it.title} ?: emptyList()
-
-    fun import(c:Context,raw:String):ValidationResult {
-        val r=OpenMineObjectFormat.validate(raw)
-        if(!r.valid)return r
-        val o=r.normalized!!
-        File(dir(c),o.id+".omd").writeText(o.raw)
-        rebuildIndex(c)
-        return r
+    private val changed = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = changed.asStateFlow()
+    private val repositories = ConcurrentHashMap<String, KnowledgeRepository>()
+    private fun repository(c:Context):KnowledgeRepository = repositories.getOrPut(c.filesDir.canonicalPath) {
+        KnowledgeRepository(c.filesDir) { synchronized(changed) { changed.value += 1 } }
     }
-
-    fun create(c:Context,o:StrictObject)=import(c,o.raw)
-
-    fun rebuildIndex(c:Context) {
-        val root=JSONObject()
-        all(c).forEach { o ->
-            val terms=linkedSetOf<String>()
-            val source=(o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" "))
-            terms.addAll(tokenize(source))
-            val chunks=JSONArray()
-            o.sections.forEach { (section,values) -> values.forEach { (label,value) ->
-                if(value.isNotBlank()&&!value.equals("NONE",true)) chunks.put(JSONObject()
-                    .put("OBJECT_ID",o.id).put("OBJECT_TYPE",o.type).put("OBJECT_TITLE",o.title).put("OBJECT_STATUS",o.status)
-                    .put("SECTION",section).put("LABEL",label).put("CHUNK_ID",o.id+"."+section+"."+label)
-                    .put("CHUNK_PRIORITY",o.sections["CONTEXT_INDEX"]?.get("INDEX_PRIORITY") ?: "50").put("CONTENT",value))
-            }}
-            root.put(o.id,JSONObject().put("OBJECT_ID",o.id).put("OBJECT_TYPE",o.type).put("OBJECT_TITLE",o.title).put("OBJECT_STATUS",o.status).put("TERMS",JSONArray(terms.toList())).put("CHUNKS",chunks))
-        }
-        File(c.filesDir,INDEX).writeText(root.toString(2))
-    }
-
-    fun search(c:Context,q:String):List<StrictObject> {
-        val terms=tokenize(q)
-        return all(c).map{o ->
-            val text=o.id+" "+o.title+" "+o.fields["OBJECT_SUMMARY"].orEmpty()+" "+o.sections.values.flatMap{it.values}.joinToString(" ")
-            o to terms.count{tokenize(text).contains(it)}
-        }.filter{it.second>0}.sortedByDescending{it.second}.map{it.first}
-    }
-
-    private fun tokenize(v:String)=v.lowercase(Locale.US).split(Regex("[^a-z0-9._-]+")).filter{it.length>=2}.toSet()
+    fun inspect(c:Context):KnowledgeStoreSnapshot = repository(c).inspect()
+    fun all(c:Context):List<StrictObject> = inspect(c).records
+    fun import(c:Context,raw:String):ValidationResult = repository(c).import(raw)
+    fun update(c:Context,id:String,raw:String):ValidationResult = repository(c).update(id,raw)
+    fun delete(c:Context,o:StrictObject) = repository(c).delete(o.id)
+    fun create(c:Context,o:StrictObject):ValidationResult = import(c,o.raw)
+    fun rebuildIndex(c:Context) { repository(c).rebuildIndex() }
+    fun search(c:Context,q:String):List<StrictObject> = repository(c).search(q)
 }
