@@ -153,9 +153,16 @@ class SafWorkflowTest {
     }
 
     private fun awaitPicker() {
-        val picker = device.wait(Until.findObject(By.pkg(Pattern.compile("com\\.(android|google)\\.documentsui"))), 15_000)
-        assertNotNull("Android DocumentsUI did not open", picker)
-        pickerPackage = picker!!.applicationPackage
+        // DocumentsUI replaces its initial accessibility tree as the activity opens.
+        // Do not retain a UiObject2 and read its package after that transition.
+        val packages = listOf("com.android.documentsui", "com.google.documentsui")
+        val deadline = android.os.SystemClock.elapsedRealtime() + 15_000
+        pickerPackage = ""
+        while (pickerPackage.isEmpty() && android.os.SystemClock.elapsedRealtime() < deadline) {
+            pickerPackage = packages.firstOrNull { device.hasObject(By.pkg(it)) }.orEmpty()
+            if (pickerPackage.isEmpty()) Thread.sleep(50)
+        }
+        assertTrue("Android DocumentsUI did not open", pickerPackage.isNotEmpty())
         device.waitForIdle()
     }
 

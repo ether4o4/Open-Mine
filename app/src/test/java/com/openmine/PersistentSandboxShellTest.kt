@@ -16,7 +16,7 @@ class PersistentSandboxShellTest {
             processStarter = { args, _, _ -> ProcessBuilder("/bin/bash", "--noprofile", "--norc", "-c", args.last()).directory(directory).start() })
         val shell = PersistentSandboxShell(executor, directory.path, directory.path, directory.path)
         try { withTimeout(15000) { test(shell, directory) } }
-        finally { shell.reset(); directory.deleteRecursively() }
+        finally { shell.reset()?.join(); directory.deleteRecursively() }
     }
 
     @Test fun capturesOutputWithoutNewlineBeforeCommandCompletes() = withShell { shell, _ ->
@@ -106,4 +106,36 @@ class PersistentSandboxShellTest {
         assertEquals(true, shell.run("exit 9", 3)["shell_died"])
         assertEquals("${directory.path}/child", shell.run("pwd", 3)["stdout"])
     }
+    @Test fun backgroundChildSurvivesCompletedAndSubsequentCommands() = withShell { shell, _ ->
+        val result = shell.run("sleep 30 > /dev/null 2>&1 & echo \$!", 3)
+        val pid = (result["stdout"] as String).trim().toInt()
+        try {
+            assertEquals(true, result["success"])
+            repeat(3) { assertEquals(true, shell.run("kill -0 $pid; printf alive", 3)["success"]) }
+        } finally { shell.run("kill $pid; wait $pid 2>/dev/null; true", 3) }
+    }
+
+
+    @Test fun nohupCompletesAfterLaunchingCommandReturns() = withShell { shell, directory ->
+        val marker = File(directory, "background-result")
+        assertEquals(true, shell.run("nohup sh -c 'sleep 1; printf PERSISTENCE_OK > \"${marker.path}\"' >/dev/null 2>&1 </dev/null &", 3)["success"])
+        repeat(3) { assertEquals("foreground", shell.run("printf foreground", 3)["stdout"]) }
+        withTimeout(5000) { while (!marker.exists()) delay(50) }
+        assertEquals("PERSISTENCE_OK", marker.readText())
+    }
+
+    @Test fun cancelStopsJobControlChildrenBeforeLaterStatements() = withShell { shell, directory ->
+        val ready = CompletableDeferred<Unit>()
+        val job = CoroutineScope(currentCoroutineContext()).async {
+            shell.run("set -m; (sleep 2; touch '${directory.path}/escaped') & printf 'ready\\n'; sleep 20; touch '${directory.path}/later'", 30,
+                onStdout = { if (it == "ready") ready.complete(Unit) })
+        }
+        ready.await()
+        shell.cancelForeground()
+        assertEquals(true, job.await()["cancelled"])
+        delay(2500)
+        assertFalse(File(directory, "escaped").exists())
+        assertFalse(File(directory, "later").exists())
+    }
+
 }

@@ -5,6 +5,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_OUTPUT_LENGTH = 15_000
@@ -12,7 +16,7 @@ private const val RS = "\u001e"
 private const val US = "\u001f"
 private const val PID_PROBE_PREFIX = "${RS}OPENMINEPID$US"
 
-/** Foreground Bash jobs with checkpointed cwd/exports. This is not a security boundary for hostile commands. */
+/** A persistent Bash process. This is a shell, not a security boundary for hostile commands. */
 class PersistentSandboxShell(
     private val executor: ProotExecutor,
     private val tmpPath: String,
@@ -24,13 +28,20 @@ class PersistentSandboxShell(
     private val stateLock = Any()
     @Volatile private var handle: ProotHandle? = null
     @Volatile private var bashPid: Int? = null
-    @Volatile private var processToken: Any? = null
+    @Volatile private var processToken: ProcessIdentity? = null
     @Volatile private var lastCwd = initialCwd
-    private var watchdog: Job? = null
     private var exportedState = ""
     private val cancelLock = Any()
-    private var pidReady = CompletableDeferred<Int>()
+    private var watchdog: Job? = null
+    private var cleanup: Job? = null
     private val currentSink = AtomicReference<CommandSink?>(null)
+
+    private class ProcessIdentity {
+        val group = AtomicInteger()
+        val started = CountDownLatch(1)
+        val cleaning = AtomicBoolean()
+        val cleaned = CountDownLatch(1)
+    }
 
     private class CommandSink(
         val nonce: String,
@@ -47,9 +58,7 @@ class PersistentSandboxShell(
 
     data class Result(val exitCode: Int, val cwd: String, val bashPid: Int, val shellDied: Boolean = false)
 
-    /** Each foreground job gets its own Bash process tree. Completed cwd/exports are
-     * checkpointed in memory; cancellation cannot resume a later statement or target
-     * another submitted job. This deliberately does not support detached background jobs. */
+    /** Sources commands to retain cwd/export, and drains BOTH output pipes before returning. */
     suspend fun run(
         command: String,
         timeoutSeconds: Long,
@@ -62,8 +71,9 @@ class PersistentSandboxShell(
         val cmdFile = File(tmpPath, ".openmine_cmd_${sink.nonce}")
         val stateFile = File(tmpPath, ".openmine_env_${sink.nonce}")
         try {
-            ensureShell()
-            withTimeout(5000) { pidReady.await() }
+            val fresh = ensureShell()
+            val identity = processToken ?: error("Shell failed to start")
+            check(runInterruptible(Dispatchers.IO) { identity.started.await(5, TimeUnit.SECONDS) }) { "Shell PID unavailable" }
             currentSink.set(sink)
             cmdFile.writeText(command)
             stateFile.writeText(exportedState)
@@ -72,19 +82,20 @@ class PersistentSandboxShell(
             // Dedicated descriptors survive ordinary `exec >file` / `exec 2>file` redirects.
             // Both pipes need a barrier: a stderr marker alone can race stdout delivery,
             // and a command like `printf hello` otherwise never releases readLine().
-            val line = ". $statePath; . $path; __openmine_status=\$?; command rm -f $path; builtin export -p > $statePath; " +
+            val line = (if (fresh) ". $statePath; " else "") +
+                ". $path; __openmine_status=\$?; command rm -f $path; builtin export -p > $statePath; " +
                 "builtin printf '\\n\\036%s\\036\\n' '${sink.nonce}' >&19; " +
                 "builtin printf '\\n\\036%s\\037%d\\037%d\\037%s\\036\\n' '${sink.nonce}' \"\$__openmine_status\" \"\$\$\" \"\$PWD\" >&20"
             check(handle?.writeInput(line) == true) { "Shell input closed; retry the command" }
             val result = withTimeoutOrNull(timeoutSeconds.coerceIn(1, 1800) * 1000) { sink.done.await() }
             if (result == null) {
-                cancelAndAwait()
+                cancelForeground()
                 val recovered = withTimeoutOrNull(2000) { sink.done.await() }
                 if (recovered == null) reset()
                 return@withLock buildResult(sink, recovered ?: Result(-1, lastCwd, 0, true), timedOut = true)
             }
             if (!result.shellDied && !sink.cancelled) {
-                lastCwd = result.cwd
+                lastCwd = result.cwd; bashPid = result.bashPid
                 exportedState = stateFile.readText()
             }
             buildResult(sink, result)
@@ -92,18 +103,18 @@ class PersistentSandboxShell(
             // A cancelled caller must not release the mutex while its command keeps
             // running; otherwise a subsequent command inherits the old output/process.
             withContext(NonCancellable) {
-                cancelAndAwait()
+                cancelForeground()
+                withTimeoutOrNull(1500) { sink.done.await() }
+                reset()?.join()
             }
             throw e
         } catch (e: Exception) {
-            reset()
+            withContext(NonCancellable) { reset()?.join() }
             synchronized(sink) { appendBounded(sink.stderr, e.message ?: "Shell command failed") }
             buildResult(sink, Result(-1, lastCwd, 0, true))
         } finally {
-            // Stop only this job's descendants before releasing the command mutex.
-            withContext(NonCancellable) { terminateJob(sink) }
+            if (sink.cancelled) withContext(NonCancellable) { reset()?.join() }
             currentSink.compareAndSet(sink, null)
-            reset()
             cmdFile.delete()
             stateFile.delete()
         }
@@ -111,59 +122,56 @@ class PersistentSandboxShell(
 
     fun writeInput(line: String) { handle?.writeInput(line) }
 
-    /** Never signal just a child: Bash would continue with the next statement. */
+    /** Freeze the shell before terminating its children, so no later statement can run. */
     fun cancelForeground() {
         val sink = currentSink.get() ?: return
         sink.cancelled = true
-        scope.launch { terminateJob(sink) }
-    }
-
-    private suspend fun cancelAndAwait() {
-        val sink = currentSink.get() ?: return
-        sink.cancelled = true
-        terminateJob(sink)
-    }
-
-    private suspend fun terminateJob(sink: CommandSink) = withContext(Dispatchers.IO) {
-        synchronized(cancelLock) {
-            if (currentSink.get() !== sink) return@synchronized
-            val pid = bashPid
-            if (pid != null) {
-                // Freeze each ancestor BEFORE discovering its children. No frozen parent
-                // can fork or execute the statement after its child is killed. This tree
-                // belongs to one job, never the engine or a different terminal session.
-                executor.execute("""
-                    freeze_tree() {
-                        kill -STOP "${'$'}1" 2>/dev/null || return
-                        for child in ${'$'}(pgrep -P "${'$'}1"); do freeze_tree "${'$'}child"; done
-                        kill -KILL "${'$'}1" 2>/dev/null || true
-                    }
-                    freeze_tree $pid
-                """.trimIndent(), 5)
-            }
-            reset()
+        scope.launch {
+            synchronized(cancelLock) {
+                if (currentSink.get() === sink) reset() else null
+            }?.join()
         }
     }
 
-    fun reset() = synchronized(stateLock) {
+    /** Detach immediately; callers stopping the runtime may join the returned cleanup job. */
+    fun reset(): Job? = synchronized(stateLock) {
         val old = handle
+        val identity = processToken
         handle = null
         processToken = null
         bashPid = null
         watchdog?.cancel()
         watchdog = null
-        old?.cancel()
+        if (old != null) {
+            val previousCleanup = cleanup
+            cleanup = scope.launch { previousCleanup?.join(); cleanProcess(old, identity) }
+        }
         currentSink.getAndSet(null)?.done?.complete(Result(-1, lastCwd, 0, true))
-        Unit
+        cleanup
+    }
+
+    private fun cleanProcess(old: ProotHandle, identity: ProcessIdentity?) {
+        if (identity != null && !identity.cleaning.compareAndSet(false, true)) {
+            try { identity.cleaned.await() } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+            return
+        }
+        // PID output may arrive after reset detached this session. Keep its
+        // identity until cleanup so early Cancel can still kill the right group.
+        try {
+            if (identity != null && identity.group.get() == 0) identity.started.await(5, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        finally {
+            try { executor.stopProcessGroup(old, identity?.group?.get() ?: 0, graceful = false) }
+            finally { identity?.cleaned?.countDown() }
+        }
     }
 
     private fun ensureShell() = synchronized(stateLock) {
-        if (handle != null) return@synchronized
-        val token = Any()
-        pidReady = CompletableDeferred()
+        if (handle != null) return@synchronized false
+        val token = ProcessIdentity()
         processToken = token
         val h = executor.executeStreaming(
-            command = "exec bash --noprofile --norc",
+            command = "exec setsid bash --noprofile --norc",
             onStdout = { dispatch(it, false, token) },
             onStderr = { dispatch(it, true, token) },
         )
@@ -172,6 +180,9 @@ class PersistentSandboxShell(
         check(h.writeInput("builtin printf '\\n\\036OPENMINEPID\\037%d\\036\\n' \"\$\$\" >&20")) { "Bash failed to start" }
         watchdog = scope.launch {
             h.awaitExit(0)
+            // An explicit shell exit must also release background children whose
+            // pipes may otherwise keep the old session alive after replacement.
+            cleanProcess(h, token)
             synchronized(stateLock) {
                 // A delayed watcher from the old process must never tear down a new one.
                 if (handle === h) {
@@ -181,14 +192,18 @@ class PersistentSandboxShell(
                 }
             }
         }
+        true
     }
 
-    private fun dispatch(line: String, stderr: Boolean, token: Any) {
-        if (processToken !== token) return
+    private fun dispatch(line: String, stderr: Boolean, token: ProcessIdentity) {
         if (stderr && line.startsWith(PID_PROBE_PREFIX) && line.endsWith(RS)) {
-            line.substring(PID_PROBE_PREFIX.length, line.length - 1).toIntOrNull()?.let { bashPid = it; pidReady.complete(it) }
+            line.substring(PID_PROBE_PREFIX.length, line.length - 1).toIntOrNull()?.takeIf { it > 1 }?.let {
+                if (token.group.compareAndSet(0, it)) token.started.countDown()
+                if (processToken === token) bashPid = token.group.get()
+            }
             return
         }
+        if (processToken !== token) return
         val sink = currentSink.get() ?: return
         synchronized(sink) {
             if (!stderr && line == "$RS${sink.nonce}$RS") {

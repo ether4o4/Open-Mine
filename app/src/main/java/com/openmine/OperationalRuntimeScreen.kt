@@ -1,7 +1,8 @@
 package com.openmine
 
-import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -28,11 +30,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.testTag
+import org.json.JSONArray
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openmine.sandbox.OpenMineRuntime
 
 private val RuntimeText=Color(0xFFEAF5FF)
@@ -55,12 +58,35 @@ private val RuntimeCyan=Color(0xFF38D8FF)
     var command by remember{mutableStateOf(preferences.getString("command_draft","").orEmpty())}
     var selectedModel by remember{mutableStateOf(preferences.getString("selected_model","").orEmpty())}
     var followOutput by remember{mutableStateOf(preferences.getBoolean("follow_output",true))}
-    var review by remember{mutableStateOf<String?>(null)}
+    val history = remember { ShellCommandHistory(runCatching {
+        val saved = JSONArray(preferences.getString("command_history", "[]"))
+        List(saved.length()) { saved.getString(it) }
+    }.getOrDefault(emptyList())) }
+    var historyPosition by remember { mutableIntStateOf(history.position) }
+    fun editCommand(value: String) {
+        command = value
+        preferences.edit().putString("command_draft", value).apply()
+    }
+    fun recall(previous: Boolean) {
+        editCommand(if (previous) history.previous(command) else history.next(command))
+        historyPosition = history.position
+    }
     var localMessage by remember{mutableStateOf("")}
     var deleteWeights by remember{mutableStateOf(false)}
+    var huggingFaceImport by rememberSaveable { mutableStateOf(false) }
+    fun browseHuggingFace() {
+        runCatching { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://huggingface.co/models"))) }
+            .onSuccess { huggingFaceImport = true; localMessage = "" }
+            .onFailure { localMessage = "Could not open a browser. Open https://huggingface.co/models to download weights." }
+    }
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
         if(uri!=null){localMessage="";runtime.importModel(uri)}
     }
+    if (huggingFaceImport) AlertDialog(onDismissRequest = { huggingFaceImport = false },
+        title = { Text("Import from Hugging Face") },
+        text = { Text("Choose a model on Hugging Face and download its GGUF weights from Files and versions. Then select the downloaded file here. You can browse any model; local loading requires a compatible GGUF that fits your device.") },
+        confirmButton = { TextButton({ huggingFaceImport = false; picker.launch(arrayOf("application/octet-stream", "*/*")) }, enabled = !busy) { Text("Choose downloaded file") } },
+        dismissButton = { TextButton({ huggingFaceImport = false }) { Text("Cancel") } })
     LaunchedEffect(models){
         val refreshed=ModelImportSelection.afterRefresh(previouslySeenModels.toList(),models,selectedModel)
         previouslySeenModels=models.toTypedArray()
@@ -70,16 +96,22 @@ private val RuntimeCyan=Color(0xFF38D8FF)
     }
     if(deleteWeights)AlertDialog(onDismissRequest={deleteWeights=false},title={Text("Delete imported weights?")},text={Text("Deletes $selectedModel from Open Mine. Your original phone file is preserved.")},
         confirmButton={TextButton({runtime.deleteModel(selectedModel);deleteWeights=false}){Text("Delete weights")}},dismissButton={TextButton({deleteWeights=false}){Text("Keep")}})
-    review?.let{exactCommand->CommandReviewDialog(exactCommand,
-        onDismiss={review=null},onRun={
-            review=null
-            if(!runtime.busy.value && runtime.ready){preferences.edit().putString("last_reviewed_command",exactCommand).apply();runtime.command(exactCommand)}
-            else localMessage="The shell state changed while you reviewed. Check the status, then review again."
-        })}
+    fun submitCommand() {
+        if (runtime.busy.value || !runtime.ready || command.isBlank()) return
+        runCatching { RuntimeCommandPolicy.validate(command) }.onSuccess { exact ->
+            if (runtime.command(exact)) {
+                history.record(exact)
+                historyPosition = history.position
+                preferences.edit().putString("command_history", JSONArray(history.entries).toString()).apply()
+                editCommand("")
+                localMessage = ""
+            }
+        }.onFailure { localMessage = it.message.orEmpty() }
+    }
     LazyColumn(Modifier.fillMaxSize().imePadding().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
         item{
             Text(if(terminalOnly)"LINUX SHELL"else "ON-DEVICE GGUF",color=RuntimeText,fontSize=24.sp,fontWeight=FontWeight.Bold)
-            Text(if(terminalOnly)"Alpine Linux in Android PRoot, with app-private files and Android kernel limits; this is not root access to your phone. Each reviewed foreground job has its own process tree. Completed cwd/output survive restart; exported variables persist until this app process ends. Detached background jobs are not retained."
+            Text(if(terminalOnly)"Alpine Linux in Android PRoot, with app-private files and Android kernel limits; this is not root access to your phone. The Bash session and ordinary background jobs remain active between commands while the runtime runs. Cancel or timeout resets that shell; separately managed services continue. Completed cwd/output survive restart; exported variables are retained after cancellation."
                 else "Import GGUF weights, install the engine, and start a local model server. AI Chat uses http://127.0.0.1:8080/v1 with model ID local after its health check passes.",color=RuntimeMuted,fontSize=14.sp)
         }
         item{RuntimeStatus(status,busy,shellHealthy,modelHealthy)}
@@ -92,21 +124,41 @@ private val RuntimeCyan=Color(0xFF38D8FF)
                 Text(if(shellHealthy)"Installed files retained · shell execution check passed"else "Installed files retained · shell execution check needed",color=RuntimeMuted,fontSize=12.sp)
                 if(BuildConfig.DEBUG)TextButton({localMessage="";runtime.setup()},enabled=!busy){Text("Repair setup")}
             }
-            if(BuildConfig.DEBUG)Text("Setup downloads Linux prerequisites. Keep Open Mine in the foreground; cancelled or failed setup can be retried without deleting existing Linux files.",color=RuntimeMuted,fontSize=12.sp)
+            if(BuildConfig.DEBUG)Text("Setup downloads Linux prerequisites. The runtime service keeps the operation active when you leave the app; cancelled or failed setup can be retried without deleting existing Linux files.",color=RuntimeMuted,fontSize=12.sp)
             else Text("Runtime downloads are disabled in this build. Shell execution requires already-installed, compatible prerequisites.",color=RuntimeMuted,fontSize=12.sp)
         }
         if(terminalOnly){
             item{
-                OutlinedTextField(command,{command=it;preferences.edit().putString("command_draft",it).apply()},Modifier.fillMaxWidth(),
-                    enabled=!busy,label={Text("Shell command")},supportingText={Text("${command.toByteArray(Charsets.UTF_8).size}/8192 bytes · local draft")},minLines=2,maxLines=8,
-                    keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.None,autoCorrectEnabled=false))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton({ recall(true) }, enabled = !busy && historyPosition > 0,
+                        modifier = Modifier.testTag("shell-history-up").semantics { contentDescription = "Previous command" }) { Text("↑") }
+                    TextButton({ recall(false) }, enabled = !busy && historyPosition < history.entries.size,
+                        modifier = Modifier.testTag("shell-history-down").semantics { contentDescription = "Next command" }) { Text("↓") }
+                }
+                OutlinedTextField(command, { editCommand(it) }, Modifier.fillMaxWidth().testTag("shell-command").onPreviewKeyEvent { event ->
+                    when {
+                        event.key == Key.Enter && !event.isShiftPressed -> {
+                            if (event.type == KeyEventType.KeyUp) submitCommand()
+                            true
+                        }
+                        event.key == Key.DirectionUp && !event.isShiftPressed -> {
+                            if (event.type == KeyEventType.KeyDown && !busy) recall(true)
+                            true
+                        }
+                        event.key == Key.DirectionDown && !event.isShiftPressed -> {
+                            if (event.type == KeyEventType.KeyDown && !busy) recall(false)
+                            true
+                        }
+                        else -> false
+                    }
+                }, enabled=!busy, label={Text("Shell command")},
+                    supportingText={Text("${command.toByteArray(Charsets.UTF_8).size}/8192 bytes · Enter to run")}, minLines=2,maxLines=8,
+                    keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.None,autoCorrectEnabled=false,imeAction=ImeAction.Send),
+                    keyboardActions=KeyboardActions(onSend={submitCommand()}))
                 Text("Install packages with apk add. Example: apk add --no-cache git",color=RuntimeMuted,fontSize=12.sp)
                 if(!shellHealthy)Text("Check or set up the shell before running commands.",color=RuntimeMuted,fontSize=12.sp)
             }
-            item{Button({
-                val checked=runCatching{RuntimeCommandPolicy.validate(command)}
-                checked.onSuccess{localMessage="";review=it}.onFailure{localMessage=it.message.orEmpty()}
-            },enabled=!busy && shellHealthy && command.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Review and run command")}}
+            item{Button({ submitCommand() },enabled=!busy && shellHealthy && command.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Run command")}}
         }else{
             if(BuildConfig.DEBUG)item{
                 Button({localMessage="";runtime.engine("provision")},enabled=!busy && shellHealthy && !engineInstalled,modifier=Modifier.fillMaxWidth()){Text(if(engineInstalled)"Engine installed successfully"else "Install GGUF engine")}
@@ -116,6 +168,7 @@ private val RuntimeCyan=Color(0xFF38D8FF)
                 }
                 Text("ARM64 phones use the engine included in the app; setup downloads required Linux libraries. Other devices may build from source. Output and errors below come from the actual operation.",color=RuntimeMuted,fontSize=12.sp)
             }
+            item { OutlinedButton({ browseHuggingFace() }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("import-hugging-face")) { Text("Import from Hugging Face") } }
             item{OutlinedButton({localMessage="";picker.launch(arrayOf("application/octet-stream","*/*"))},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Import GGUF weights")}}
             if(models.isEmpty())item{Text("No model weights are imported. Choose a small quantized GGUF that fits this device's memory. Import checks the file header; loading verifies architecture and runtime compatibility.",color=RuntimeMuted,fontSize=14.sp)}
             items(models,key={it}){model->
@@ -167,20 +220,6 @@ private val RuntimeCyan=Color(0xFF38D8FF)
         if(busy)item{OutlinedButton({runtime.cancel();message="Cancellation requested."}){Text("Cancel operation")}}
         if(message.isNotBlank())item{Text(message,color=RuntimeCyan)}
         item{RuntimeOutput(output,true,null)}
-    }
-}
-
-/** Keep at the persistent app root, so navigating away cannot orphan a busy operation. */
-@Composable fun RuntimeOperationLifecycle(c:Context){
-    val runtime=remember{OpenMineRuntime.get(c)}
-    val owner=LocalLifecycleOwner.current
-    DisposableEffect(owner,runtime){
-        val observer=LifecycleEventObserver{_,event->
-            if(event==Lifecycle.Event.ON_STOP && (c as? Activity)?.isChangingConfigurations!=true && runtime.busy.value)runtime.cancel()
-        }
-        owner.lifecycle.addObserver(observer)
-        // Internal navigation may continue the shared operation. Backgrounding cancels it.
-        onDispose{owner.lifecycle.removeObserver(observer)}
     }
 }
 

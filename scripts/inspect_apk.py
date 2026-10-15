@@ -65,6 +65,8 @@ def main():
         for abi in ('arm64-v8a', 'armeabi-v7a', 'x86_64'):
             for library in ('libproot.so', 'libproot-loader.so', 'libtalloc.so'):
                 assert f'lib/{abi}/{library}' in native, f'Missing shell runtime: {abi}/{library}'
+    published_signer = '19e9092f2cdd8124db62b27e2fca6c269c0e2d8fbc1b764de9fdea7ad33235cb'
+    update_signer_matches = cert.group(1).lower() == published_signer
     checksum = hashlib.sha256(args.apk.read_bytes()).hexdigest()
     abi_list = sorted({name.split('/')[1] for name in native})
     evidence = {
@@ -77,10 +79,12 @@ def main():
         'target_sdk': re.search(r"targetSdkVersion:'([^']+)'", badging).group(1),
         'packaged_abis': abi_list, 'native_libraries': native,
         'packaged_shell_sha256': hashlib.sha256(shell).hexdigest(),
-        'upgrade_compatibility': 'Built with this workspace debug key. Original installation signing key was unavailable. Compare the installed signer before updating; preserve user data and do not uninstall or clear it.',
+        'published_041_signer_sha256': published_signer,
+        'published_041_signer_matches': update_signer_matches,
+        'upgrade_compatibility': ('Signer matches the published 0.4.1 APK; verify the actual installed signer and back up before updating.' if update_signer_matches else 'TEST INSTALL ONLY: signer differs from published 0.4.1. This APK cannot update that installation. Preserve the existing app and data; do not uninstall to bypass the mismatch.'),
         'abi_runtime_coverage': 'See Android test artifacts. Packaging an ABI does not prove it runs.',
         'inference_status': 'UNVERIFIED unless separate actual GGUF/Ollama runtime evidence establishes it; no fixture result is inference evidence.',
-        'distribution': 'Development APK only. No release publication or signing-key backup is claimed.',
+        'distribution': 'Development APK. Publication and signing backup are recorded separately; a successful build does not establish update compatibility.',
     }
     (args.output / 'apk-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     (args.output / 'app-debug.apk.sha256').write_text(f'{checksum}  app-debug.apk\n')

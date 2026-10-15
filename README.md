@@ -1,38 +1,55 @@
 # Open Mine
 
-Spatial AI workspace foundation.
+Android AI workspace with the original blue orbital HUD, world map, navigation rail and shortcut dock.
 
 ## Latest APK
 
-**[Download Open Mine for Android — 0.4.0-dev](https://drive.google.com/file/d/148NBA-B9KRKLZvPryHx8bVoJUk3UX5zg/view)**
+**[Download Open Mine 0.4.2-dev APK](https://github.com/ether4o4/Open-Mine/releases/download/v0.4.2-dev/Open-Mine-0.4.2-dev.apk)**
 
-**[Bookmark the rolling download section](https://github.com/ether4o4/Open-Mine#latest-apk).**
-This section is the current-build entry point. Update its APK and verification
-links with each verified delivery; individual APK links refer to a specific build.
+**Development preview — separate test installation only.** The available signing
+key differs from the published 0.4.1 APK. This download cannot update that
+installation. Keep your existing Open Mine installation and data; do not uninstall
+it to bypass Android's signature check. An in-place update requires its original
+signing key. The package remains `com.openmine`.
 
-Download the `.apk` directly on your phone and open it to install as an update.
-No ZIP extraction is needed. Keep the existing app and its data; do not uninstall
-or clear storage. If Android rejects the update, preserve the existing installation.
-The Drive download may require the Google account with access to the shared file.
+[Release notes, exact tested commit, checksums and verification](https://github.com/ether4o4/Open-Mine/releases/tag/v0.4.2-dev)
+· [Rolling download bookmark](https://github.com/ether4o4/Open-Mine#latest-apk)
 
-| Current build | Details |
+| Current source | Details |
 | --- | --- |
-| Version | `0.4.0-dev` · version code `10` · development APK |
-| Updated | 2026-10-11 |
+| Version | `0.4.2-dev` · version code `12` |
+| Updated | 2026-10-15 |
 | Package | `com.openmine` |
-| Source commit | `a9c7536031f684e6fec3925e5e572ea4ae841261` |
-| APK SHA-256 | `86682a3964bb50c548cdb0825903e3ba9c5540408f8222b62c7182faf8e11eae` |
+| Baseline | Verified 0.4.1 source bundle, original commit `21a33b8451241494d7b6c4f6a1d2296315f2bd8d` |
+| Changes | PR #3 model fixes and 6% text increase, persistent runtime, Termux controls, panel heights, shell history and Hugging Face import entry point |
 
-[Verification notes, source and checksums](https://drive.google.com/file/d/1kWmfwJtN1C0FVPVL5t0qBzNPdKHMaVl2/view)
-· [UI preview](https://drive.google.com/file/d/1UUTtdq6lAHNr3WMVkXckdrL8diYegQtf/view)
+## What's included
 
-This build makes Chat a primary destination, sharpens the glass UI, preserves
-shell installation labels and improves draft recovery. Build and lint checks,
-109 unit tests and 21 Android test cases passed across the recorded runs.
-Physical S24 Ultra testing and offline on-device GGUF generation remain unverified;
-the earlier Alpine compiler-installation issue remains outstanding.
+- A retained Bash session and a foreground Android service. Ordinary background
+  commands survive completed shell submissions; explicitly managed services also
+  survive terminal cancellation. Android force-stop and system restrictions still
+  apply.
+- Optional authenticated Termux control: `openmine start`, `openmine shell`,
+  `openmine status`, `openmine stop`, and managed-process commands.
+- Browser and Terminal panels resize in height only. Each remembers its own size;
+  tap the top handle for a slider and reset control.
+- Return/Send submits shell commands and clears accepted input. Up/down arrows
+  recall the last 100 commands across restarts and restore unfinished drafts.
+- **Import from Hugging Face** opens the model catalog in your device browser.
+  Download compatible GGUF weights, return to Open Mine, and choose the downloaded
+  file. This uses the existing importer; other model formats are not made runnable.
+- Updated Qwen/Gemma validation, model-server lifetime and health handling, import
+  storage checks, and 6% larger text while retaining system font scaling.
 
-<!-- Delivery procedure: after posting a verified APK link in chat, update this
-section's download, version, date, source commit, SHA-256 and verification links
-together. Retain the latest-apk heading so the rolling bookmark stays valid.
-Do not point it at an unverified CI artifact or imply automatic app updates. -->
+The original HUD assets, project storage paths, and application ID are preserved.
+See [runtime and Termux setup](docs/RUNTIME_CONTROL.md) for controls and limits.
+
+## Verification
+
+The release notes record checks against the exact delivered APK, including any
+failures or unverified device behavior. Hosted emulator inference is not proof of
+physical S24 Ultra inference. The original 0.4.1 APK and source remain available:
+
+[Previous 0.4.1 APK](https://drive.google.com/file/d/12siB5tumckPtduMRV6yC86NryhKmf1pE/view)
+· [Original source bundle](https://drive.google.com/file/d/14r5fDTTG8n2gpPxFU42vtKQ_pEq8JDac/view)
+· [Restored HUD reference](https://drive.google.com/file/d/14wmiyhon8h70df7SiHYWbr-W6KZWCdqX/view)

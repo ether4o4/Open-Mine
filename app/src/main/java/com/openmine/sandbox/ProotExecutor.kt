@@ -229,3 +229,39 @@ class ProotExecutor(
     }
 }
 
+
+/** Stop owned guest children before killing their tracer; cancellation alone can orphan them. */
+internal fun ProotExecutor.stopProcessGroup(handle: ProotHandle, group: Int, graceful: Boolean = true) {
+    var interrupted = Thread.interrupted()
+    fun signal(name: String) {
+        try { execute("kill -$name -$group 2>/dev/null || true", 2) }
+        catch (_: InterruptedException) { interrupted = true }
+        catch (_: Exception) { /* Still attempt escalation and tracer cleanup. */ }
+        finally { if (Thread.interrupted()) interrupted = true }
+    }
+    try {
+        if (group > 1) {
+            if (!graceful) {
+                // Preserve v0.4.1's cancellation guarantee even when Bash job control
+                // gave a descendant a different process group.
+                try { execute("""
+                    freeze_tree() {
+                        kill -STOP "${'$'}1" 2>/dev/null || return
+                        for child in ${'$'}(pgrep -P "${'$'}1"); do freeze_tree "${'$'}child"; done
+                        kill -KILL "${'$'}1" 2>/dev/null || true
+                    }
+                    freeze_tree $group
+                """.trimIndent(), 5) }
+                catch (_: InterruptedException) { interrupted = true }
+                catch (_: Exception) { /* Fall back to the owned process group. */ }
+                finally { if (Thread.interrupted()) interrupted = true }
+            }
+            signal(if (graceful) "TERM" else "STOP")
+            if (graceful) try { Thread.sleep(150) } catch (_: InterruptedException) { interrupted = true }
+            signal("KILL")
+        }
+    } finally {
+        try { handle.cancel() }
+        finally { if (interrupted) Thread.currentThread().interrupt() }
+    }
+}

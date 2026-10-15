@@ -111,7 +111,10 @@ internal fun ReferenceHud(
             HudImage("background.png", Modifier.fillMaxSize(), ContentScale.Crop)
             Column {
                 HudNativeToolbar(HudNavNames[screen]) { navigation = true }
-                if (screen !in 0..3) Box(Modifier.weight(1f).fillMaxWidth()) { utility(screen) }
+                if (screen !in 0..3) Box(Modifier.weight(1f).fillMaxWidth()) {
+                    if (screen == 8 || screen == 9) ResizableUtilityPanel(screen, portrait = false) { utility(screen) }
+                    else utility(screen)
+                }
                 else LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("accessible-workspace"), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item { HudText("${items.size} saved records · ${actualContext.size} in context", 14, color = Muted) }
                     item { HudText(runtimeStatus, 14, color = Ice) }
@@ -148,7 +151,8 @@ internal fun ReferenceHud(
                         modifier = Modifier.align(Alignment.TopCenter).offset(y = 148.dp))
                 }
                 if (screen !in 0..3) {
-                    Box(Modifier.offset(207.dp, 265.dp).size(466.dp, 909.dp).clip(RoundedCornerShape(16.dp))
+                    if (screen == 8 || screen == 9) ResizableUtilityPanel(screen, portrait = true) { utility(screen) }
+                    else Box(Modifier.offset(207.dp, 265.dp).size(466.dp, 909.dp).clip(RoundedCornerShape(16.dp))
                         .background(Glass).border(1.dp, Edge, RoundedCornerShape(16.dp))) { utility(screen) }
                 } else if (current == null) {
                     HudEmptyState(category, onManage, onRuntime, Modifier.offset(219.dp, 603.dp).width(444.dp))

@@ -52,10 +52,10 @@ jobs:
           git status --porcelain --untracked-files=no > verification/source-status.txt
           test ! -s verification/source-status.txt
           bash -n app/src/main/assets/sandbox/morsllm.sh
-          python3 app/src/test/scripts/test_engine_lifecycle.py 2>&1 | tee verification/python-tests.txt
+          python3 -m unittest discover -s app/src/test/scripts -v 2>&1 | tee verification/python-tests.txt
       - name: Rebuild the affected PRoot ABI from pinned source and compatibility patch
         run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash scripts/build_proot_android.sh verification/native-build
-      - name: Create the user-authorized new signing identity and encrypted backup
+      - name: Prepare retained signing or a test-only identity and encrypted backup
         env:
           OPEN_MINE_SIGNING_P12_BASE64: ${{ secrets.OPEN_MINE_SIGNING_P12_BASE64 }}
           OPEN_MINE_RETAINED_SIGNING_PASSWORD: ${{ secrets.OPEN_MINE_RETAINED_SIGNING_PASSWORD }}
@@ -165,7 +165,7 @@ jobs:
       - name: Verify API35 HUD, accessibility, keyboard and project journeys
         uses: reactivecircus/android-emulator-runner@v2
         env:
-          OPENMINE_TEST_CLASSES: com.openmine.HudIntegrationTest,com.openmine.ProjectRuntimeTest,com.openmine.SafWorkflowTest
+          OPENMINE_TEST_CLASSES: com.openmine.HudIntegrationTest,com.openmine.ProjectRuntimeTest,com.openmine.SafWorkflowTest,com.openmine.PanelResizeTest,com.openmine.ShellInputTest,com.openmine.RuntimeControlTest,com.openmine.RuntimeServiceLifecycleTest
         with:
           api-level: 35
           arch: x86_64

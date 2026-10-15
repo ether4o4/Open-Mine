@@ -61,7 +61,6 @@ class MainActivity : ComponentActivity() {
     val context = LocalContext.current
     val preferences = remember { context.getSharedPreferences("open_mine", Context.MODE_PRIVATE) }
     val runtime = remember { OpenMineRuntime.get(context) }
-    RuntimeOperationLifecycle(context)
     var screen by remember { mutableIntStateOf(preferences.getInt("screen", 3).coerceIn(0, 12)) }
     var overlay by remember { mutableStateOf(preferences.getString("route", "").orEmpty()) }
     var openedId by remember { mutableStateOf(preferences.getString("opened_record", "").orEmpty()) }
@@ -238,6 +237,7 @@ private fun recordType(screen: Int): String? = when (screen) {
         Setting("Animations", "Workspace motion; Android reduced motion takes precedence.", animations, setAnimations, "setting-animations")
         Setting("Haptic feedback", "Touch feedback when switching workspace sections.", haptics, setHaptics, "setting-haptics")
         Text("Browser and model connection settings are saved in their respective workspaces. Saved API keys use Android Keystore and are excluded from backups.")
+        RuntimeControls(LocalContext.current)
         MemoryScreen()
         WorkspaceRecoveryScreen()
     }

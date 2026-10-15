@@ -30,8 +30,10 @@ class OpenMineRuntime private constructor(private val context:Context) {
     val output=MutableStateFlow(runCatching{transcript.readText().takeLast(20000)}.getOrDefault(""))
     val terminalOutput=MutableStateFlow(output.value)
     private val session by lazy { PersistentSandboxShell(executor(),tmp.absolutePath,runCatching{File(base,"terminal-cwd.txt").readText()}.getOrDefault("/root")) }
+    private val processes by lazy { RuntimeProcessManager(executor()) }
     val models=MutableStateFlow<List<String>>(emptyList())
     private var job:Job?=null
+    @Volatile private var stopping=false
     private var handle:ProotHandle?=null
     private var modelServerHandle:ProotHandle?=null
     val shellHealthy=MutableStateFlow(false)
@@ -45,8 +47,67 @@ class OpenMineRuntime private constructor(private val context:Context) {
     private val modelDir get()=File(home,".morsvitaest/llm/models").apply{mkdirs()}
     init{
         refreshModels()
-        if(shellFilesPresent) verifyShell() else _status.value="Linux shell needs setup or repair"
+        _status.value=if(shellFilesPresent) "Linux shell installed; start or check the runtime" else "Linux shell needs setup or repair"
     }
+    /** The service owns execution; Activity disposal never cancels this scope. */
+    fun onServiceStarted() {
+        val shutdown=synchronized(this){if(stopping)job else null}
+        scope.launch {
+            shutdown?.join()
+            if(RuntimeService.running.value && shellFilesPresent && !ready && !busy.value)verifyShell()
+        }
+    }
+    @Synchronized fun stopRuntime() {
+        if(stopping)return
+        stopping=true
+        val previous=job
+        previous?.cancel()
+        downloader.cancel()
+        handle?.cancel()
+        shellHealthy.value=false; engineHealthy.value=false; modelHealthy.value=false
+        // Keep admission closed until the old operation has actually stopped. Group
+        // shutdown may need escalation, so it must never block Android's main thread.
+        busy.value=true
+        val cleanup=scope.launch(start=CoroutineStart.LAZY) { withContext(NonCancellable) {
+            try {
+                previous?.join()
+                // A model daemon may survive loss of its PRoot tracer. Stop it through
+                // its PID-aware engine script before releasing the retained tracer.
+                if(File(home,"morsllm.sh").isFile) {
+                    runCatching { executor().execute("bash /root/morsllm.sh stop",10) }
+                    modelServerHandle?.cancel(); modelServerHandle=null
+                }
+                session.reset()?.join()
+                processes.stopAll()
+            } finally { synchronized(this@OpenMineRuntime) {
+                handle=null; stopping=false; busy.value=false; _status.value="Runtime stopped"
+            } }
+        } }
+        job=cleanup
+        cleanup.start()
+    }
+    fun controlStatus():JSONObject=JSONObject()
+        .put("running",RuntimeService.running.value).put("installed",shellInstalled.value)
+        .put("shell_healthy",shellHealthy.value).put("model_healthy",modelHealthy.value)
+        .put("busy",busy.value).put("status",status.value).put("processes",processes.list().toJson(includeOutput=false))
+
+    suspend fun controlCommand(command:String,timeoutSeconds:Long):Map<String,Any> {
+        val operation=launchOperation("Running command") {
+            if(!ready)probeShell()
+            executeCommand(command,timeoutSeconds)
+        } ?: error("Runtime is busy; retry after the active operation finishes")
+        return operation.await()
+    }
+    suspend fun startManagedProcess(command:String):RuntimeProcessManager.ProcessInfo {
+        val operation=launchOperation("Starting managed process") {
+            if(!ready)probeShell()
+            currentCoroutineContext().ensureActive()
+            processes.start(command).also { _status.value="Managed process ${it.id} started" }
+        } ?: error("Runtime is busy; retry after the active operation finishes")
+        return operation.await()
+    }
+    fun stopManagedProcess(id:String)=processes.stop(id)
+    fun managedProcess(id:String)=processes.snapshot(id)
     private fun refreshInstallation(){
         val installation=RuntimeInstallation.inspect(base)
         shellInstalled.value=installation.shellInstalled
@@ -87,12 +148,24 @@ class OpenMineRuntime private constructor(private val context:Context) {
     }
     private fun refreshEngineScript(){context.assets.open("sandbox/morsllm.sh").use{ShellScriptInstaller.install(File(home,"morsllm.sh"),it.readBytes())}}
     private fun executor()=ProotExecutor(File(context.applicationInfo.nativeLibraryDir,"libproot.so").absolutePath,base.absolutePath,rootfs.absolutePath,home.absolutePath,tmp.absolutePath)
-    @Synchronized private fun run(label:String,action:suspend ()->Unit){
-        if(busy.value)return
+    @Synchronized private fun <T> launchOperation(label:String,action:suspend ()->T):Deferred<T>? {
+        if(busy.value)return null
         busy.value=true;_status.value=label;if(label!="Running command") output.value=""
-        job=scope.launch{try{action()}catch(e:CancellationException){_status.value="Cancelled"}catch(e:Exception){_status.value="Failed: ${e.message}"}finally{refreshInstallation();handle=null;busy.value=false}}
+        val operation=scope.async(start=CoroutineStart.LAZY) {
+            val ownJob=currentCoroutineContext()[Job]
+            try { RuntimeService.ensureStarted(context); action() }
+            catch(e:CancellationException){_status.value="Cancelled";throw e}
+            catch(e:Exception){_status.value="Failed: ${e.message}";throw e}
+            finally{synchronized(this@OpenMineRuntime){
+                if(job===ownJob){refreshInstallation();handle=null;busy.value=false}
+            }}
+        }
+        job=operation
+        operation.start()
+        return operation
     }
-    fun cancel(){job?.cancel();downloader.cancel();session.cancelForeground();handle?.cancel()}
+    private fun run(label:String,action:suspend ()->Unit){ launchOperation(label,action) }
+    @Synchronized fun cancel(){if(stopping)return;job?.cancel();downloader.cancel();session.cancelForeground();handle?.cancel()}
     fun setup()=run("Setting up Linux shell"){
         check(BuildConfig.DEBUG){"Runtime downloads are disabled in release builds pending Play-compatible packaging."}
         check(File(context.applicationInfo.nativeLibraryDir,"libproot.so").canExecute()){"No executable PRoot binary for this device ABI."}
@@ -136,12 +209,13 @@ class OpenMineRuntime private constructor(private val context:Context) {
         marker.writeText("ready")
         _status.value="Shell installed successfully · execution check passed"
     }
-    fun command(command:String)=run("Running command"){
+    fun command(command:String):Boolean = launchOperation("Running command"){ executeCommand(command,30) } != null
+    private suspend fun executeCommand(command:String,timeoutSeconds:Long):Map<String,Any>{
         check(ready){"Set up Linux shell first."}
         val history=(terminalOutput.value+"\n$ "+command+"\n").takeLast(20000)
         var live=""
         val result=try {
-            session.run(command,30,onStdout={line->synchronized(this){live=(live+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}},onStderr={line->synchronized(this){live=(live+"stderr: "+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}})
+            session.run(command,timeoutSeconds,onStdout={line->synchronized(this){live=(live+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}},onStderr={line->synchronized(this){live=(live+"stderr: "+line+"\n").takeLast(15000);terminalOutput.value=(history+live).takeLast(20000)}})
         } catch (e: CancellationException) {
             terminalOutput.value=(history+live+"\nCommand cancelled; shell session reset.\n").takeLast(20000)
             transcript.writeText(terminalOutput.value)
@@ -153,6 +227,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         transcript.writeText(output.value)
         if(result["shell_died"]!=true) File(base,"terminal-cwd.txt").writeText(result["cwd"].toString())
         _status.value=if(result["success"]==true)"Command finished" else "Command failed; inspect exit code and output"
+        return result
     }
     fun systemInfo(checkCancelled:()->Unit = {}):String {
         check(ready){"Linux shell needs setup; no command ran."}
