@@ -28,8 +28,16 @@ class RuntimeServiceLifecycleTest {
                 runBlocking { RuntimeService.ensureStarted(context) }
                 assertTrue(RuntimeService.running.value)
                 scenario.moveToState(Lifecycle.State.CREATED)
-                instrumentation.waitForIdleSync()
-                assertTrue("Stopping the Activity must not stop the foreground service", RuntimeService.running.value)
+                try {
+                    instrumentation.waitForIdleSync()
+                    assertTrue("Stopping the Activity must not stop the foreground service", RuntimeService.running.value)
+                } finally {
+                    // ActivityScenario leaves its EmptyActivity on top when stopped.
+                    // Closing from CREATED launches that helper again and can wait for
+                    // a resume callback from an activity that is already resumed.
+                    // Close still destroys the real Activity after this transition.
+                    scenario.moveToState(Lifecycle.State.RESUMED)
+                }
             }
             instrumentation.waitForIdleSync()
             assertTrue("Destroying the Activity must not stop the foreground service", RuntimeService.running.value)
