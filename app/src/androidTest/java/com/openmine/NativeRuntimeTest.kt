@@ -108,6 +108,45 @@ class NativeRuntimeTest {
                 assertEquals("out-$nonce\n\nStandard error\nerr-$nonce\n\nCompleted · exit 0 · $cwd\n", pipes)
                 record("both_output_pipes_drained", pipes)
 
+                // Reproduce the original nohup regression through the ordinary terminal,
+                // independently of the separate managed-process API. A gate keeps the
+                // child alive until the next command can check its actual Linux PID.
+                val backgroundPrefix = "$cwd/nohup"
+                val backgroundFiles = listOf("pid", "gate", "result", "log").map {
+                    File(base, "home/openmine-runtime-check-$nonce/nohup.$it")
+                }
+                assertTrue("Fresh nohup test paths already exist", backgroundFiles.none { it.exists() })
+                var backgroundPid: Int? = null
+                try {
+                    command("nohup sh -c 'attempt=0; while [ ! -f \"$backgroundPrefix.gate\" ]; do " +
+                        "attempt=\$((attempt + 1)); [ \"\$attempt\" -lt 100 ] || exit 1; sleep 0.1; done; " +
+                        "sleep 1; printf NOHUP_$nonce > \"$backgroundPrefix.result\"' " +
+                        ">$backgroundPrefix.log 2>&1 </dev/null & " +
+                        "printf '%s' \"\$!\" > '$backgroundPrefix.pid'")
+                    val pid = checkNotNull(backgroundFiles[0].readText().trim().toIntOrNull()) {
+                        "Background command did not publish a Linux PID"
+                    }
+                    check(pid > 1) { "Unexpected background PID: $pid" }
+                    backgroundPid = pid
+                    assertFalse("Background command completed before its gate opened", backgroundFiles[2].exists())
+                    val next = command("kill -0 $pid && printf 'BACKGROUND_ALIVE_$nonce' && touch '$backgroundPrefix.gate'")
+                    assertEquals("BACKGROUND_ALIVE_$nonce\n\nCompleted · exit 0 · $cwd\n", next)
+                    val backgroundDeadline = SystemClock.elapsedRealtime() + 10_000
+                    while (SystemClock.elapsedRealtime() < backgroundDeadline &&
+                        runCatching { backgroundFiles[2].readText() }.getOrNull() != "NOHUP_$nonce") {
+                        Thread.sleep(50)
+                    }
+                    assertEquals("Background output missing after the subsequent command: " +
+                        runCatching { backgroundFiles[3].readText() }.getOrDefault(""),
+                        "NOHUP_$nonce", runCatching { backgroundFiles[2].readText() }.getOrNull())
+                    record("ordinary_nohup_survives_submission_and_next_command", "pid=$pid\n$next\n${backgroundFiles[2].readText()}")
+                } finally {
+                    backgroundPid?.let { pid ->
+                        command("kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true")
+                    }
+                    backgroundFiles.forEach { it.delete() }
+                }
+
                 assertTrue("Runtime rejected the nonzero-exit test", runtime.command("false"))
                 idle()
                 assertTrue(runtime.status.value, runtime.status.value.startsWith("Command failed"))
