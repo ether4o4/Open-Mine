@@ -204,9 +204,10 @@ def publish(api, tag, source, directory, notes, main):
     require(existing_tag is None or existing_tag['commit']['sha'] == source, 'Release tag points at another commit')
     # Recheck the release state immediately before its one-way publication transition.
     require(api.request(f'releases/{release["id"]}')['draft'], 'Release was published concurrently')
-    result = api.request(f'releases/{release["id"]}', 'PATCH', {'body': notes, 'draft': False,
+    result = api.request(f'releases/{release["id"]}', 'PATCH', {'tag_name': tag, 'body': notes, 'draft': False,
                          'prerelease': True, 'target_commitish': source,
                          'name': f'Open Mine {tag[1:]} — runtime and workspace controls'})
+    require(result['tag_name'] == tag and not result['draft'], 'Published release has an unexpected tag or draft state')
     print('Published unchanged verified APK:', result['html_url'])
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
