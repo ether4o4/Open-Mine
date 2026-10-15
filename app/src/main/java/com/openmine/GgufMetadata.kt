@@ -41,7 +41,7 @@ object GgufMetadata {
             val key=string();val type=u32();val data=value(type)
             if(key=="general.architecture")architecture=data
         }
-        val supported=setOf("llama","qwen2","qwen2moe","qwen3moe","gemma","gemma2","phi2","phi3","mistral","stablelm","starcoder2","gpt2","gptneox","falcon")
+        val supported=setOf("llama","qwen2","qwen2moe","qwen3","qwen3moe","qwen35","qwen35moe","qwen3next","gemma","gemma2","gemma3","gemma3n","gemma4","phi2","phi3","mistral","stablelm","starcoder2","gpt2","gptneox","falcon")
         require(architecture in supported){"Unsupported model architecture: ${architecture ?: "missing"}. Use a compatible llama.cpp GGUF."}
         var largestOffset=0L
         repeat(tensors.toInt()) {

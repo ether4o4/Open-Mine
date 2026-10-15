@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -46,7 +48,10 @@ class MainActivity : ComponentActivity() {
                 try { withContext(Dispatchers.IO){WorkspaceBackup(filesDir).recover()};recovered=true }
                 catch(e:Exception){recoveryError="Workspace recovery needs attention: ${e.message}. Data preserved."}
             }
-            if(recovered)OpenMine() else MaterialTheme { Text(recoveryError ?: "Checking workspace recovery…") }
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * 1.06f)) {
+                if(recovered)OpenMine() else MaterialTheme { Text(recoveryError ?: "Checking workspace recovery…") }
+            }
         }
     }
 }

@@ -191,7 +191,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         handle=running
         // PRoot may keep its tracer alive while the served model is a tracee.
         // Readiness is the script's real HTTP health result, not tracer exit.
-        val exited=scope.async { runInterruptible(Dispatchers.IO){running.awaitExit()} }
+        val exited=scope.async { runInterruptible(Dispatchers.IO){running.awaitExit(timeoutMinutes=if(action=="serve")0 else 30)} }
         var parsed:JSONObject?=null
         val exit=try {
             if(action=="serve")withTimeout(330000){select<Int>{
@@ -221,10 +221,14 @@ class OpenMineRuntime private constructor(private val context:Context) {
                     output.value=(tail+"\nBUILD LOG:\n"+java.io.RandomAccessFile(log,"r").use{file->val size=minOf(file.length(),12000L).toInt();file.seek(file.length()-size);val bytes=ByteArray(size);file.readFully(bytes);String(bytes,Charsets.UTF_8)}).takeLast(32000)
                 }
             }
-            error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: ${parsed?.optString("detail").orEmpty()}. See retained output.")
+            val explanation=listOf("detail","hint").mapNotNull { key -> parsed?.optString(key)?.takeIf { it.isNotBlank() } }.joinToString(" ")
+            error("${parsed?.optString("error").orEmpty().ifBlank{"engine_exit_$exit"}}: $explanation See retained output.")
         }
         if(action=="stop"){modelServerHandle?.cancel();modelServerHandle=null;modelHealthy.value=false}
-        if(action=="status")modelHealthy.value=parsed?.optBoolean("ready")==true
+        if(action=="status"){
+            modelHealthy.value=parsed?.optBoolean("ready")==true
+            engineHealthy.value=parsed?.optBoolean("provisioned")==true
+        }
         if(action=="provision"){
             engineHealthy.value=true
             engineMarker.writeText("execution verified")
@@ -250,8 +254,8 @@ class OpenMineRuntime private constructor(private val context:Context) {
                 while(received<4){val n=input.read(header,received,4-received);check(n>0){"Empty or truncated model"};received+=n}
                 check(String(header,Charsets.US_ASCII)=="GGUF"){"Selected file is not GGUF model data"}
                 out.write(header)
-                val buffer=ByteArray(65536);var total=4L
-                while(true){currentCoroutineContext().ensureActive();val count=input.read(buffer);if(count<0)break;total+=count;check(total<=8L*1024*1024*1024){"Model exceeds 8 GiB limit"};check(base.usableSpace>count+16L*1024*1024){"Not enough free storage"};out.write(buffer,0,count);_status.value="Imported ${total/(1024*1024)} MiB"}
+                val buffer=ByteArray(65536);var total=4L;var nextStorageCheck=4L
+                while(true){currentCoroutineContext().ensureActive();val count=input.read(buffer);if(count<0)break;total+=count;check(total<=8L*1024*1024*1024){"Model exceeds 8 GiB limit"};if(total>=nextStorageCheck){check(base.usableSpace>2L*1024*1024+16L*1024*1024){"Not enough free storage"};nextStorageCheck=total+1024*1024};out.write(buffer,0,count);_status.value="Imported ${total/(1024*1024)} MiB"}
                 out.fd.sync()
             }} ?: error("Cannot open model file")
             val info=com.openmine.GgufMetadata.inspect(partial)

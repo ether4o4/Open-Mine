@@ -27,6 +27,23 @@ class GgufMetadataTest {
             assertEquals(file.length(),info.bytes)
         }finally{file.delete()}
     }
+    @Test fun acceptsBundledEngineQwenAndGemmaArchitectures() {
+        for (architecture in listOf("qwen3", "qwen35", "qwen35moe", "qwen3next", "gemma3", "gemma3n", "gemma4")) {
+            val file=Files.createTempFile("gguf-architecture-test", ".gguf").toFile()
+            try {
+                DataOutputStream(file.outputStream()).use { out ->
+                    fun u32(n:Int)=out.writeInt(Integer.reverseBytes(n))
+                    fun u64(n:Long)=out.writeLong(java.lang.Long.reverseBytes(n))
+                    fun text(s:String){val bytes=s.toByteArray();u64(bytes.size.toLong());out.write(bytes)}
+                    out.writeBytes("GGUF");u32(3);u64(1);u64(1)
+                    text("general.architecture");u32(8);text(architecture)
+                    text("test.weight");u32(1);u64(1);u32(0);u64(0)
+                    out.write(ByteArray((32-out.size()%32)%32));out.writeFloat(0f)
+                }
+                assertEquals(architecture,GgufMetadata.inspect(file).architecture)
+            } finally { file.delete() }
+        }
+    }
     @Test fun rejectsHeaderOnlyAndUnsupportedArchitecture() {
         val file=Files.createTempFile("gguf-test",".gguf").toFile()
         try {
