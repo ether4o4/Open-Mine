@@ -29,7 +29,8 @@ mkdir -p verification
 printf '%s\n' "$signing_source" > verification/signing-source.txt
 tar -C "$signing_dir" -czf "$signing_dir/signing-backup.tar.gz" open-mine.p12 password.txt
 openssl cms -encrypt -binary -aes-256-cbc -in "$signing_dir/signing-backup.tar.gz" \
-  -outform DER -out verification/signing-backup.cms .github/signing-backup-public.pem
+  -outform DER -out verification/signing-backup.cms \
+  .github/signing-backup-public.pem .github/signing-recovery-public.pem
 rm "$signing_dir/signing-backup.tar.gz"
 {
   echo "OPEN_MINE_SIGNING_STORE=$signing_dir/open-mine.p12"

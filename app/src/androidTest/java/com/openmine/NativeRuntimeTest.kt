@@ -153,22 +153,46 @@ class NativeRuntimeTest {
                 assertEquals("\nFailed · exit 1 · $cwd\n", latestResult("false"))
                 record("nonzero_exit_reported", runtime.output.value)
 
-                val laterStatement=File(base,"home/openmine-runtime-check-$nonce/later.txt")
-                val descendant=File(base,"home/openmine-runtime-check-$nonce/descendant.txt")
-                runtime.command("(sleep 4; printf escaped > '$cwd/descendant.txt') & printf 'START_$nonce\\n'; sleep 45; printf escaped > '$cwd/later.txt'; printf 'SHOULD_NOT_RUN_$nonce'")
-                val startDeadline = SystemClock.elapsedRealtime() + 15_000
-                while (!runtime.terminalOutput.value.contains("\nSTART_$nonce\n") && runtime.busy.value && SystemClock.elapsedRealtime() < startDeadline) Thread.sleep(50)
-                assertTrue("Long-running command never emitted actual output", runtime.terminalOutput.value.contains("\nSTART_$nonce\n"))
-                val cancelled = SystemClock.elapsedRealtime()
-                runtime.cancel()
-                idle(15_000)
-                assertEquals("Cancelled", runtime.status.value)
-                assertTrue("Cancelled command reached its final printf", !runtime.terminalOutput.value.contains("\nSHOULD_NOT_RUN_$nonce\n"))
-                Thread.sleep(4500)
-                assertFalse("Cancelled submission executed a later statement",laterStatement.exists())
-                assertFalse("Cancelled submission left a descendant running",descendant.exists())
-                evidence.put("cancelElapsedMillis", SystemClock.elapsedRealtime() - cancelled)
-                record("actual_foreground_cancel", runtime.terminalOutput.value)
+                val cancellationAttempts = JSONArray()
+                evidence.put("cancellationAttempts", cancellationAttempts)
+                repeat(3) { attempt ->
+                    val laterStatement = File(base, "home/openmine-runtime-check-$nonce/later-$attempt.txt")
+                    val descendant = File(base, "home/openmine-runtime-check-$nonce/descendant-$attempt.txt")
+                    val startMarker = "START_${nonce}_$attempt"
+                    val forbiddenMarker = "SHOULD_NOT_RUN_${nonce}_$attempt"
+                    // Job control moves descendants into separate process groups. Both
+                    // modes must stop later statements and background grandchildren.
+                    val jobControl = if (attempt == 1) "set -m; " else "set +m; "
+                    assertFalse("Fresh later-statement fixture already exists", laterStatement.exists())
+                    assertFalse("Fresh descendant fixture already exists", descendant.exists())
+                    assertTrue("Runtime rejected cancellation attempt $attempt", runtime.command(
+                        jobControl + "(sleep 4; printf escaped > '$cwd/descendant-$attempt.txt') & " +
+                            "printf '$startMarker\\n'; sleep 45; printf escaped > '$cwd/later-$attempt.txt'; printf '$forbiddenMarker'"))
+                    val startDeadline = SystemClock.elapsedRealtime() + 15_000
+                    while (!runtime.terminalOutput.value.contains("\n$startMarker\n") && runtime.busy.value &&
+                        SystemClock.elapsedRealtime() < startDeadline) Thread.sleep(50)
+                    assertTrue("Cancellation attempt $attempt never emitted actual output", runtime.terminalOutput.value.contains("\n$startMarker\n"))
+                    val cancelled = SystemClock.elapsedRealtime()
+                    runtime.cancel()
+                    idle(15_000)
+                    val cancelMillis = SystemClock.elapsedRealtime() - cancelled
+                    assertEquals("Cancellation attempt $attempt", "Cancelled", runtime.status.value)
+                    Thread.sleep(4500)
+                    val details = JSONObject().put("attempt", attempt).put("jobControl", attempt == 1)
+                        .put("cancelElapsedMillis", cancelMillis)
+                        .put("laterStatementExists", laterStatement.exists())
+                        .put("descendantExists", descendant.exists())
+                        .put("terminalOutput", runtime.terminalOutput.value.takeLast(6000))
+                    cancellationAttempts.put(details)
+                    evidenceFile.writeText(evidence.toString(2) + "\n")
+                    assertFalse("Cancelled attempt $attempt reached its final printf: $details",
+                        runtime.terminalOutput.value.contains("\n$forbiddenMarker"))
+                    assertFalse("Cancelled attempt $attempt executed a later statement: $details", laterStatement.exists())
+                    assertFalse("Cancelled attempt $attempt left a descendant running: $details", descendant.exists())
+                    val recoveredAttempt = command("printf 'RECOVERED_${nonce}_$attempt'")
+                    assertEquals("RECOVERED_${nonce}_$attempt\n\nCompleted · exit 0 · $cwd\n", recoveredAttempt)
+                }
+                record("actual_foreground_cancel", cancellationAttempts.toString())
                 val recovered = command("printf 'RECOVERED_$nonce'")
                 assertEquals("RECOVERED_$nonce\n\nCompleted · exit 0 · $cwd\n", recovered)
                 record("command_after_cancel", recovered)

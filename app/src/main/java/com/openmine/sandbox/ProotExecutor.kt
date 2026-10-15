@@ -242,15 +242,21 @@ internal fun ProotExecutor.stopProcessGroup(handle: ProotHandle, group: Int, gra
     try {
         if (group > 1) {
             if (!graceful) {
-                // Preserve v0.4.1's cancellation guarantee even when Bash job control
-                // gave a descendant a different process group.
+                // SIGSTOP delivery is asynchronous under PRoot/ptrace. Killing a
+                // foreground child first can wake Bash before its STOP takes effect,
+                // allowing the next statement to run. Snapshot each parent's children
+                // before killing the parent, then visit those saved PIDs. SIGKILL
+                // prevents that parent from resuming even if STOP was not delivered.
+                // Traversing descendants also covers Bash job-control process groups.
                 try { execute("""
-                    freeze_tree() {
+                    terminate_tree() {
                         kill -STOP "${'$'}1" 2>/dev/null || return
-                        for child in ${'$'}(pgrep -P "${'$'}1"); do freeze_tree "${'$'}child"; done
+                        set -- "${'$'}1" ${'$'}(pgrep -P "${'$'}1")
                         kill -KILL "${'$'}1" 2>/dev/null || true
+                        shift
+                        for child do terminate_tree "${'$'}child"; done
                     }
-                    freeze_tree $group
+                    terminate_tree $group
                 """.trimIndent(), 5) }
                 catch (_: InterruptedException) { interrupted = true }
                 catch (_: Exception) { /* Fall back to the owned process group. */ }

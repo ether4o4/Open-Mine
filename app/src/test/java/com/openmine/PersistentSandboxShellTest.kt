@@ -10,10 +10,21 @@ import java.nio.file.Files
 
 /** Real local Bash subprocess tests of framing/lifecycle, NOT proof of Android PRoot execution. */
 class PersistentSandboxShellTest {
-    private fun withShell(test: suspend (PersistentSandboxShell, File) -> Unit) = runBlocking {
+    private fun withShell(delayStopDelivery: Boolean = false, test: suspend (PersistentSandboxShell, File) -> Unit) = runBlocking {
         val directory = Files.createTempDirectory("openmine-shell-").toFile()
+        // Model a tracer that has accepted STOP but has not stopped the tracee yet.
+        // The pause after KILL gives a surviving parent time to resume after wait().
+        val signalWrapper = if (delayStopDelivery) """
+            kill() {
+                if [ "${'$'}1" = -STOP ]; then return 0; fi
+                builtin kill "${'$'}@"
+                result=${'$'}?
+                if [ "${'$'}1" = -KILL ]; then sleep 0.05; fi
+                return "${'$'}result"
+            }
+        """.trimIndent() + "\n" else ""
         val executor = ProotExecutor("unused", "unused", directory.path, directory.path, directory.path,
-            processStarter = { args, _, _ -> ProcessBuilder("/bin/bash", "--noprofile", "--norc", "-c", args.last()).directory(directory).start() })
+            processStarter = { args, _, _ -> ProcessBuilder("/bin/bash", "--noprofile", "--norc", "-c", signalWrapper + args.last()).directory(directory).start() })
         val shell = PersistentSandboxShell(executor, directory.path, directory.path, directory.path)
         try { withTimeout(15000) { test(shell, directory) } }
         finally { shell.reset()?.join(); directory.deleteRecursively() }
@@ -99,6 +110,21 @@ class PersistentSandboxShellTest {
         val result = shell.run("sleep 20; touch '${directory.path}/forbidden'", 1)
         assertEquals(124, result["exit_code"])
         assertFalse(File(directory, "forbidden").exists())
+    }
+
+    @Test fun cancellationCannotResumeParentsWhenStopDeliveryIsDelayed() = withShell(delayStopDelivery = true) { shell, directory ->
+        val ready = CompletableDeferred<Unit>()
+        val job = CoroutineScope(currentCoroutineContext()).async {
+            shell.run("(sleep 20; printf escaped > '${directory.path}/descendant') & " +
+                "printf 'ready\\n'; sleep 20; printf escaped > '${directory.path}/later'", 30,
+                onStdout = { if (it == "ready") ready.complete(Unit) })
+        }
+        ready.await()
+        shell.cancelForeground()
+        assertEquals(true, job.await()["cancelled"])
+        assertFalse("Killing the foreground child resumed its parent", File(directory, "later").exists())
+        assertFalse("Killing a grandchild resumed its parent", File(directory, "descendant").exists())
+        assertEquals("recovered", shell.run("printf recovered", 3)["stdout"])
     }
 
     @Test fun explicitExitStartsFreshSessionAndRestoresLastKnownCwd() = withShell { shell, directory ->
