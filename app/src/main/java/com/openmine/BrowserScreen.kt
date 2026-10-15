@@ -1,5 +1,7 @@
 package com.openmine
 
+import kotlinx.coroutines.*
+import androidx.compose.runtime.rememberCoroutineScope
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -112,7 +114,7 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     var canBack by remember { mutableStateOf(false) }
     var canForward by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var notice by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(if(prefs.getBoolean("download_interrupted",false))"A previous download was interrupted. Its selected destination may contain a partial file; download it again."else null) }
     var addressFocused by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -125,6 +127,57 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     val destroyedViews = remember { java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>()) }
     var uploadCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var multipleFiles by remember { mutableStateOf(false) }
+    val downloadScope=rememberCoroutineScope()
+    var pendingDownload by rememberSaveable{mutableStateOf<String?>(null)}
+    var downloadName by rememberSaveable{mutableStateOf("download")}
+    var downloadReview by remember{mutableStateOf(false)}
+    var downloading by remember{mutableStateOf(false)}
+    var downloadJob by remember{mutableStateOf<Job?>(null)}
+    var downloadConnection by remember{mutableStateOf<java.net.HttpURLConnection?>(null)}
+    val saveDownload=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")){uri->
+        val address=pendingDownload
+        if(uri!=null && address!=null){
+            val cookie=CookieManager.getInstance().getCookie(address)
+            downloading=true
+            prefs.edit().putBoolean("download_interrupted",true).apply()
+            downloadJob=downloadScope.launch{
+                try{runInterruptible(Dispatchers.IO){
+                    val connection=java.net.URL(address).openConnection() as java.net.HttpURLConnection
+                    downloadConnection=connection
+                    try{
+                        connection.instanceFollowRedirects=false;connection.connectTimeout=15000;connection.readTimeout=15000
+                        if(!cookie.isNullOrBlank())connection.setRequestProperty("Cookie",cookie)
+                        check(connection.responseCode in 200..299){"Download HTTP ${connection.responseCode}. Open the final download URL before saving."}
+                        val total=connection.contentLengthLong;require(total<=512L*1024*1024){"Download exceeds 512 MiB limit"}
+                        var received=0L
+                        connection.inputStream.use{input->context.contentResolver.openOutputStream(uri,"wt")!!.use{out->
+                            val buffer=ByteArray(65536)
+                            while(true){if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException("Cancelled");val n=input.read(buffer);if(n<0)break
+                                received+=n;require(received<=512L*1024*1024){"Download exceeds limit"};out.write(buffer,0,n);notice="App download: ${received/1024} KiB"}
+                        }}
+                        check(total<0 || received==total){"Download was truncated"}
+                    }finally{connection.disconnect();downloadConnection=null}
+                };notice="App-managed download saved to your selected destination."
+                }catch(e:Exception){withContext(NonCancellable+Dispatchers.IO){runCatching{android.provider.DocumentsContract.deleteDocument(context.contentResolver,uri)}};notice=if(e is CancellationException)"Download cancelled; partial destination removed where supported."else "Download failed: ${e.message}"}
+                finally{downloading=false;pendingDownload=null;prefs.edit().remove("download_interrupted").apply()}
+            }
+        }
+    }
+    if(downloadReview)AlertDialog(onDismissRequest={downloadReview=false},title={Text("Save this download?")},text={Text("$pendingDownload\nOpen Mine will copy this file to a location you choose (maximum 512 MiB). This is an app-managed download.")},
+        confirmButton={TextButton({downloadReview=false;saveDownload.launch(downloadName)}){Text("Choose destination")}},dismissButton={TextButton({downloadReview=false;pendingDownload=null}){Text("Cancel")}})
+    var sitePermission by remember{mutableStateOf<PermissionRequest?>(null)}
+    val permissionResult=rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){grants->
+        val request=sitePermission
+        if(request!=null){
+            if(grants.values.all{it} && grants.isNotEmpty()){request.grant(request.resources);notice="Granted this site's requested camera/microphone access for this session."}
+            else{request.deny();notice="Site permission denied."}
+        }
+        sitePermission=null
+    }
+    sitePermission?.let{request->AlertDialog(onDismissRequest={request.deny();sitePermission=null},title={Text("Website permission")},
+        text={Text("${request.origin} requests ${request.resources.joinToString{if(it==PermissionRequest.RESOURCE_VIDEO_CAPTURE)"camera"else "microphone"}}. Allow only if you trust this site.")},
+        confirmButton={TextButton({permissionResult.launch(request.resources.map{if(it==PermissionRequest.RESOURCE_VIDEO_CAPTURE)android.Manifest.permission.CAMERA else android.Manifest.permission.RECORD_AUDIO}.toTypedArray())}){Text("Review Android permission")}},
+        dismissButton={TextButton({request.deny();sitePermission=null;notice="Site permission denied."}){Text("Deny")}})}
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val chosen = if (multipleFiles) uris else uris.take(1)
         uploadCallback?.onReceiveValue(chosen.takeIf { it.isNotEmpty() }?.toTypedArray())
@@ -246,6 +299,7 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
             lifecycle.removeObserver(observer)
             uploadCallback?.onReceiveValue(null)
             uploadCallback = null
+            sitePermission?.deny();sitePermission=null
             popups.forEach { it.destroy() }
             popups.clear()
             if (webView != null) {
@@ -257,6 +311,7 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
     }
 
     Column(modifier.fillMaxSize().imePadding()) {
+        if(downloading)TextButton({val connection=downloadConnection;downloadJob?.cancel();downloadScope.launch(kotlinx.coroutines.Dispatchers.IO){connection?.disconnect()}}){Text("Cancel app download")}
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = draft, onValueChange = { draft = it },
@@ -423,9 +478,14 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                                 if (session.view === view) { pageTitle = title.orEmpty(); scheduleHistoryUpdate(view) }
                             }
                             override fun onPermissionRequest(request: PermissionRequest) {
-                                request.deny()
-                                notice = "Website camera and microphone access is unavailable in this browser."
+                                val requested=request.origin
+                                val page=Uri.parse(webView?.url.orEmpty())
+                                val sameOrigin=requested.scheme==page.scheme && requested.host==page.host && requested.port==page.port
+                                if(!sameOrigin || request.resources.any{it !in setOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE,PermissionRequest.RESOURCE_VIDEO_CAPTURE)}) {
+                                    request.deny();notice="Unsupported or cross-origin website permission denied."
+                                }else {sitePermission?.deny();sitePermission=request}
                             }
+                            override fun onPermissionRequestCanceled(request: PermissionRequest) { if(sitePermission===request)sitePermission=null }
                             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                                 uploadCallback?.onReceiveValue(null)
                                 uploadCallback = callback
@@ -459,8 +519,11 @@ fun BrowserScreen(modifier: Modifier = Modifier, onExit: () -> Unit = {}) {
                                 return true
                             }
                         }
-                        setDownloadListener { _, _, _, _, _ ->
-                            notice = "File downloads are handled by your external browser. Choose Open in external browser from Browser options."
+                        setDownloadListener { url, _, disposition, mime, _ ->
+                            if(downloading)notice="A download is already running. Cancel it before starting another."
+                            else runCatching{BrowserPolicy.navigation(url)}.onSuccess{safe->
+                                pendingDownload=safe;downloadName=android.webkit.URLUtil.guessFileName(safe,disposition,mime);downloadReview=true
+                            }.onFailure{notice="Download blocked: ${it.message}"}
                         }
                         val saved = session.restored
                         session.restored = null

@@ -15,8 +15,8 @@ class HudModelsTest {
         assertEquals("DRAFT", projected.metrics.toMap()["Record state"])
         assertEquals("Personal notes", projected.metrics.toMap()["Source"])
         assertEquals("2026-10-07", projected.metrics.toMap()["Updated"])
-        assertEquals("Stored facts", projected.tabs["CONTENT"])
-        assertEquals("Stored procedure", projected.tabs["PROCEDURE"])
+        assertEquals("Stored facts", projected.tabs["PARAMETERS"])
+        assertEquals("Stored procedure", projected.tabs["TOOLS"])
         assertEquals(listOf("local", "draft"), projected.tags)
         assertFalse(projected.metrics.any { it.first == "Status" || it.second in listOf("Ready", "Connected", "Available") })
     }
@@ -27,6 +27,6 @@ class HudModelsTest {
         assertTrue(projected.tags.isEmpty())
         assertEquals("Not recorded", projected.metrics.toMap()["Source"])
         assertEquals("No relationships recorded.", projected.tabs["RELATED"])
-        assertEquals("No procedure recorded. Saved procedures do not run automatically.", projected.tabs["PROCEDURE"])
+        assertEquals(listOf("OVERVIEW","DOCUMENTS","CHUNKS","CONTEXT","RELATED"), projected.tabs.keys.toList())
     }
 }

@@ -24,6 +24,7 @@ data class ModelToolProposal(val id:String,val name:String,val arguments:String,
                     require(keys.isEmpty()){"System information accepts no arguments; no command ran."}
                     "Run the fixed command uname -a in Open Mine's Linux environment and send its output to the selected model server."
                 }
+                in ProjectModelTools.names -> ProjectModelTools.validate(name,args)
                 else->throw IllegalArgumentException("Unsupported tool '$name'; no external action was executed.")
             }
             return ModelToolProposal(id,name,args.toString(2),effect)

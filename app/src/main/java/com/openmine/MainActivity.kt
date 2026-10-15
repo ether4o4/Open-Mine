@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -38,7 +39,15 @@ data class Orb(val title: String, val sub: String, val accent: Color, val icon: 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { OpenMine() }
+        setContent {
+            var recovered by remember { mutableStateOf(false) }
+            var recoveryError by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(Unit) {
+                try { withContext(Dispatchers.IO){WorkspaceBackup(filesDir).recover()};recovered=true }
+                catch(e:Exception){recoveryError="Workspace recovery needs attention: ${e.message}. Data preserved."}
+            }
+            if(recovered)OpenMine() else MaterialTheme { Text(recoveryError ?: "Checking workspace recovery…") }
+        }
     }
 }
 
@@ -65,6 +74,7 @@ class MainActivity : ComponentActivity() {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current
+    val focus = LocalFocusManager.current
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) { refresh++; systemMotion = ValueAnimator.areAnimatorsEnabled() }
@@ -92,6 +102,7 @@ class MainActivity : ComponentActivity() {
         } finally { loading = false }
     }
     fun route(value: String, id: String = "") {
+        focus.clearFocus()
         overlay = value; openedId = id
         preferences.edit().putString("route", value).putString("opened_record", id).apply()
     }
@@ -124,7 +135,12 @@ class MainActivity : ComponentActivity() {
                 when {
                     overlay == "runtime" -> Column(Modifier.fillMaxSize()) {
                         TextButton({ route("") }) { Text("Back to workspace") }
-                        Box(Modifier.weight(1f)) { OperationalRuntimeScreen(context) }
+                        Box(Modifier.weight(1f)) { OperationalRuntimeScreen(context, onOpenChat = {
+                            val assistant = AssistantSessionController.get(context)
+                            assistant.configure(endpoint = ModelEndpoint.BUILT_IN, model = "local")
+                            assistant.setKey("")
+                            navigate(12)
+                        }) }
                     }
                     overlay == "project" && opened != null -> ProjectWorkspace(opened) { route("") }
                     overlay == "tool" && opened != null -> ReviewedToolScreen(opened) { route("") }
@@ -154,7 +170,7 @@ class MainActivity : ComponentActivity() {
                                     10 -> DiagnosticsScreen(context)
                                     11 -> SettingsScreen(animations, { animations = it; preferences.edit().putBoolean("animations", it).apply() },
                                         haptics, { haptics = it; preferences.edit().putBoolean("haptics", it).apply() })
-                                    12 -> OperationalAssistantScreen(context)
+                                    12 -> OperationalAssistantScreen(context, onOpenModels = { route("runtime") })
                                     else -> OperationalLibraryScreen(recordType(destination), contextIds = contextIds,
                                         onToggleContext = ::toggle, onOpenRecord = ::openRecord, onBack = { navigate(3) })
                                 }
@@ -216,7 +232,9 @@ private fun recordType(screen: Int): String? = when (screen) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Setting("Animations", "Workspace motion; Android reduced motion takes precedence.", animations, setAnimations, "setting-animations")
         Setting("Haptic feedback", "Touch feedback when switching workspace sections.", haptics, setHaptics, "setting-haptics")
-        Text("Browser and model connection settings are saved in their respective workspaces. API keys stay in memory.")
+        Text("Browser and model connection settings are saved in their respective workspaces. Saved API keys use Android Keystore and are excluded from backups.")
+        MemoryScreen()
+        WorkspaceRecoveryScreen()
     }
 }
 @Composable private fun Setting(title: String, detail: String, value: Boolean, onChange: (Boolean) -> Unit, tag: String) {

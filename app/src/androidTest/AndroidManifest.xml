@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <receiver android:name="com.openmine.FixtureGrantResetReceiver"
+            android:exported="true" android:permission="android.permission.DUMP" />
         <!-- Installed only with the instrumentation APK. Only the system document picker may
              browse this provider; the target app must receive ordinary SAF URI grants. -->
         <provider

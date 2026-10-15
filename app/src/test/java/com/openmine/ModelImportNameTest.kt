@@ -5,6 +5,38 @@ import org.junit.Test
 import java.nio.file.Files
 
 class ModelImportNameTest {
+    @Test fun concurrentImportsWithTheReportedNameKeepEveryCompletedFile(){
+        val directory=Files.createTempDirectory("openmine-model-concurrent").toFile()
+        val pool=java.util.concurrent.Executors.newFixedThreadPool(4)
+        try{
+            val name="Kiwi App Qwen2.5-Coder-3B-Instruct-abliterated-Q4_K_M.gguf"
+            val original=directory.resolve(name).apply{writeText("original")}
+            val tasks=(0 until 12).map{index->pool.submit<java.io.File>{
+                val partial=directory.resolve("incoming-$index.part").apply{writeText("weights-$index")}
+                ModelImportName.publish(partial,directory,name)
+            }}
+            val published=tasks.map{it.get(5,java.util.concurrent.TimeUnit.SECONDS)}
+            assertEquals(12,published.map{it.name}.toSet().size)
+            assertEquals((0 until 12).map{"weights-$it"}.toSet(),published.map{it.readText()}.toSet())
+            assertEquals("original",original.readText())
+            assertEquals(13,directory.listFiles()!!.size)
+        }finally{pool.shutdownNow();directory.deleteRecursively()}
+    }
+    @Test fun existingDestinationSymlinkIsNotReplacedOrFollowed(){
+        val directory=Files.createTempDirectory("openmine-model-destination").toFile()
+        try{
+            val outside=directory.resolve("original-data").apply{writeText("untouched")}
+            val destination=directory.resolve("model.gguf")
+            Files.createSymbolicLink(destination.toPath(),outside.toPath())
+            val partial=directory.resolve("incoming.part").apply{writeText("new model")}
+            val published=ModelImportName.publish(partial,directory,"model.gguf")
+            assertNotEquals(destination.name,published.name)
+            assertTrue(Files.isSymbolicLink(destination.toPath()))
+            assertEquals("untouched",outside.readText())
+            assertEquals("new model",published.readText())
+            assertFalse(partial.exists())
+        }finally{directory.deleteRecursively()}
+    }
     @Test fun keepsRecognizableNamesWhileRejectingProviderPathAndControlCharacters(){
         assertEquals("Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",ModelImportName.filename("Qwen2.5-0.5B-Instruct-Q4_K_M.GGUF"))
         assertEquals("model.gguf",ModelImportName.filename("../.."))

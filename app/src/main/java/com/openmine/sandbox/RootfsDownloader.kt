@@ -74,7 +74,7 @@ class RootfsDownloader {
                 if (index < urls.lastIndex) onProgress(0f)
             }
         }
-        throw IOException("All Alpine mirrors failed", lastError)
+        throw IOException("All Alpine mirrors failed (${lastError?.javaClass?.simpleName ?: "network error"}). Check internet access, proxy and certificate settings.", lastError)
     }
 
     private suspend fun downloadFrom(

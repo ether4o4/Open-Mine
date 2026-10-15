@@ -5,6 +5,18 @@ import org.junit.Test
 import java.nio.file.Files
 
 class AssistantSessionStoreTest {
+    @Test fun plainChatIsTheDefaultAndExistingToolConsentSurvivesUpdates(){
+        assertFalse(AssistantSession().toolsEnabled)
+        assertFalse(AssistantSessionStore.migrateLegacy("", "", "").toolsEnabled)
+        val optedIn=AssistantSession(toolsEnabled=true)
+        assertTrue(AssistantSessionStore.decode(AssistantSessionStore.encode(optedIn)).toolsEnabled)
+        val optedOut=optedIn.copy(toolsEnabled=false)
+        assertFalse(AssistantSessionStore.decode(AssistantSessionStore.encode(optedOut)).toolsEnabled)
+        // Older saved schema-1 sessions without this field keep the earlier behavior.
+        val legacy=org.json.JSONObject(AssistantSessionStore.encode(optedIn)).apply{remove("toolsEnabled")}
+        assertTrue(AssistantSessionStore.decode(legacy.toString()).toolsEnabled)
+    }
+
     @Test fun restartingPreservesDraftHistoryEndpointAndActualCompletionStates(){
         val directory=Files.createTempDirectory("openmine-assistant").toFile()
         try{

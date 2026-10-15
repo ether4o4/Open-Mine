@@ -6,10 +6,13 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import org.json.JSONObject
 import org.junit.After
@@ -26,11 +29,17 @@ class HudIntegrationTest {
     private val preferences get() = context.getSharedPreferences("open_mine", Context.MODE_PRIVATE)
     private var scenario: ActivityScenario<MainActivity>? = null
     private var originalFontScale = 1f
+    private var fixturePrepared = false
 
     @Before fun prepareIsolatedWorkspace() {
+        assertTrue("HUD integration tests require an isolated emulator", Build.HARDWARE in setOf("ranchu", "goldfish") || Build.PRODUCT.contains("sdk"))
         originalFontScale = Settings.System.getFloat(context.contentResolver, Settings.System.FONT_SCALE, 1f)
+        fixturePrepared = true
         // Test-runner app data is isolated from user devices. This suite must not run against a
         // personal installation; these are real store mutations, not fake production fixtures.
+        runBlocking { AssistantSessionController.pauseForRecovery() }
+        File(context.filesDir, "assistant").deleteRecursively()
+        context.getSharedPreferences("assistant", Context.MODE_PRIVATE).edit().clear().commit()
         File(context.filesDir, "open_mine_objects").deleteRecursively()
         File(context.filesDir, "open_mine_index.json").delete()
         preferences.edit().clear().putInt("screen", 3).putBoolean("animations", false).commit()
@@ -38,9 +47,51 @@ class HudIntegrationTest {
     }
 
     @After fun closeActivityAndRestoreAccessibilityPreference() {
+        if (!fixturePrepared) return
         scenario?.close()
+        runBlocking { AssistantSessionController.pauseForRecovery() }
         if (Settings.System.getFloat(context.contentResolver, Settings.System.FONT_SCALE, 1f) != originalFontScale)
             shell("settings put system font_scale $originalFontScale")
+    }
+
+    @Test fun originalHudOpensKnowledgeAndExistingMenuCanOpenAndRestoreChatDraft() {
+        preferences.edit().remove("screen").commit()
+        launch()
+        awaitTag("empty-manage")
+        assertEquals(3, preferences.getInt("screen", 3))
+        assertVisibleDockWithinViewport()
+        compose.onNodeWithText("No knowledge records yet").assertIsDisplayed()
+        compose.onNodeWithTag("nav-3").assertIsDisplayed().assertHasClickAction()
+        capture("hud-restored-default-knowledge")
+        navigate(12)
+        awaitTag("chat_screen")
+        compose.onNodeWithTag("chat_screen").performScrollToNode(hasTestTag("chat_composer"))
+        val draft = "Keep this unsent draft: café → λ"
+        // The standard focus-based input helper did not update this restored panel.
+        // Exercise the real field's SetText callback and verify controller/render state.
+        compose.onNodeWithTag("chat_composer").assertIsDisplayed().performSemanticsAction(SemanticsActions.SetText) { action ->
+            assertTrue("The visible composer must accept the edit", action(AnnotatedString(draft)))
+        }
+        compose.waitUntil(10_000) { AssistantSessionController.get(context).state.value.session.current.draft == draft }
+        compose.onNodeWithTag("chat_composer").assertTextContains(draft)
+        scenario!!.onActivity { activity ->
+            val manager = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            manager.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+            activity.currentFocus?.clearFocus()
+        }
+        compose.waitForIdle()
+        capture("chat-restored-original-layout")
+        navigate(3)
+        awaitTag("empty-manage")
+        navigate(12)
+        awaitTag("chat_screen")
+        compose.onNodeWithTag("chat_screen").performScrollToNode(hasTestTag("chat_composer"))
+        compose.onNodeWithTag("chat_composer").assertTextContains(draft)
+        scenario!!.recreate()
+        awaitTag("chat_screen")
+        compose.onNodeWithTag("chat_screen").performScrollToNode(hasTestTag("chat_composer"))
+        compose.onNodeWithTag("chat_composer").assertTextContains(draft)
+        assertEquals(12, preferences.getInt("screen", -1))
     }
 
     @Test fun emptyWorkspaceHasNoSeededCatalogueAndAllFourDocksRemainVisible() {
@@ -106,12 +157,14 @@ class HudIntegrationTest {
             val first = records.first { it.type == type }
             awaitDetail(first.title)
             compose.onNodeWithTag("orbit-${first.id}").assertIsDisplayed().performClick()
-            compose.onNodeWithTag("tab-CONTENT").performClick()
-            compose.onNodeWithTag("tab-CONTENT").assertIsSelected()
+            val approvedTab=listOf("PARAMETERS","FILES","PERMISSIONS","DOCUMENTS")[index]
+            compose.onNodeWithTag("tab-$approvedTab").performClick()
+            compose.onNodeWithTag("tab-$approvedTab").assertIsSelected()
             compose.onNodeWithTag("tab-OVERVIEW").performClick()
             assertVisibleDockWithinViewport()
             capture("hud-imported-$name")
-            repeat(9) { compose.onNodeWithContentDescription("Next record").performClick() }
+            repeat(9) { compose.onNodeWithContentDescription("Next objects").performClick() }
+            compose.onNodeWithTag("carousel-${records.last { it.type == type }.id}").performClick()
             awaitDetail(records.last { it.type == type }.title)
             compose.onNodeWithTag("orbit-${records.last { it.type == type }.id}").assertIsDisplayed()
         }

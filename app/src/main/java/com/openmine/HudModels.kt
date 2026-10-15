@@ -27,10 +27,29 @@ internal fun hudRecordContent(record: StrictObject): HudRecordContent {
         listOf("Record state" to record.status, "Format" to (record.fields["OBJECT_VERSION"] ?: "—"),
             "Source" to (clean(record.fields["OBJECT_SOURCE"]) ?: "Not recorded"),
             "Updated" to (clean(record.fields["OBJECT_UPDATED"])?.take(10) ?: "Not recorded")),
-        linkedMapOf("OVERVIEW" to summary,
+        approvedTabs(record, linkedMapOf("OVERVIEW" to summary,
             "CONTENT" to listOfNotNull(clean(content["CONTENT_PURPOSE"]), clean(content["CONTENT_FACTS"])).joinToString("\n\n").ifBlank { "No purpose or facts recorded." },
             "PROCEDURE" to (clean(content["CONTENT_PROCEDURE"]) ?: "No procedure recorded. Saved procedures do not run automatically."),
             "CONTEXT" to section("CONTEXT_INDEX"),
-            "RELATED" to section("RELATIONSHIPS")),
+            "RELATED" to section("RELATIONSHIPS"))),
     )
+}
+
+private fun approvedTabs(record: StrictObject, content: Map<String,String>): Map<String,String> {
+    val names=when(record.type) {
+        "MODEL"->listOf("OVERVIEW","PARAMETERS","CONTEXT","TOOLS","RELATED")
+        "PROJECT"->listOf("OVERVIEW","FILES","TASKS","AGENTS","CONTEXT")
+        "CONNECTOR"->listOf("OVERVIEW","PERMISSIONS","TOOLS","CONTEXT","LOGS")
+        else->listOf("OVERVIEW","DOCUMENTS","CHUNKS","CONTEXT","RELATED")
+    }
+    return names.associateWith { tab-> content[tab] ?: when(tab) {
+        "PARAMETERS","DOCUMENTS"->content.getValue("CONTENT")
+        "TOOLS"->content.getValue("PROCEDURE")
+        "FILES","TASKS"->"Open this project to view and manage its actual ${tab.lowercase()}."
+        "AGENTS"->"No autonomous agent is running. Open AI Chat to make individually reviewed tool requests."
+        "PERMISSIONS"->"A connector record grants no phone or external access. Each implemented tool requires explicit review."
+        "LOGS"->"No live connector session is established by this record."
+        "CHUNKS"->"Open Knowledge to inspect validated source fields. Project document ingestion extracts text separately."
+        else->"No saved content."
+    }}
 }

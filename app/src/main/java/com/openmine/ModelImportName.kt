@@ -1,7 +1,9 @@
 package com.openmine
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.util.UUID
@@ -25,8 +27,8 @@ object ModelImportName {
         return "$sanitized.gguf"
     }
 
-    /** Atomically publishes complete bytes without ever replacing an existing destination. */
-    fun publish(partial:File,directory:File,displayName:String?):File {
+    /** Publish a completed same-directory copy; serialize app imports and preserve collisions. */
+    @Synchronized fun publish(partial:File,directory:File,displayName:String?):File {
         require(partial.parentFile.canonicalFile==directory.canonicalFile){"Model import is outside its destination directory."}
         require(Files.isRegularFile(partial.toPath(),LinkOption.NOFOLLOW_LINKS)){"Model import data is missing or is a symbolic link."}
         val preferred=filename(displayName)
@@ -34,12 +36,17 @@ object ModelImportName {
             val name=if(attempt==0)preferred else preferred.removeSuffix(".gguf")+"-"+UUID.randomUUID()+".gguf"
             val destination=File(directory,name)
             try{
-                // Creating the hard link fails atomically with EEXIST. A check-then-rename could
-                // overwrite a model created between the existence check and rename syscall.
-                Files.createLink(destination.toPath(),partial.toPath())
-                partial.delete()
+                // Android can reject hard links in app storage. A same-directory move uses
+                // rename, requiring neither a hard link nor another multi-gigabyte copy.
+                // Do not add ATOMIC_MOVE: it may replace a destination even without
+                // REPLACE_EXISTING. Runtime jobs and this method serialize app imports.
+                Files.move(partial.toPath(),destination.toPath())
                 return destination
             }catch(_:FileAlreadyExistsException){ /* Preserve the collision and choose a unique suffix. */ }
+            catch(failure:FileSystemException){
+                val reason=failure.reason?.takeIf{it.isNotBlank()}?.let{": $it"}.orEmpty()
+                throw IOException("Could not finish saving the imported model (${failure.javaClass.simpleName}$reason). The original selected file was not changed.",failure)
+            }
         }
         error("Could not allocate a unique model filename. Existing models were preserved.")
     }

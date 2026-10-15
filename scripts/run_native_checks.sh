@@ -25,7 +25,8 @@ adb -e shell am instrument -w -r -e class com.openmine.NativeRuntimeTest \
   -e nativeRuntime true -e openMineTestedCommit "$TESTED_COMMIT" \
   com.openmine.test/androidx.test.runner.AndroidJUnitRunner > verification/native/shell-instrumentation.txt
 cat verification/native/shell-instrumentation.txt
-python3 - <<'PY'
+shell_result=0
+python3 - <<'PY' || shell_result=$?
 import pathlib, re
 text = pathlib.Path('verification/native/shell-instrumentation.txt').read_text()
 match = re.search(r'OK \((\d+) tests?\)', text)
@@ -33,7 +34,7 @@ assert match and int(match.group(1)) > 0, 'Actual Android shell tests failed or 
 assert not re.search(r'INSTRUMENTATION_STATUS_CODE: -[34]\b', text), 'Native shell checks skipped/assumed'
 assert not any(x in text for x in ('FAILURES!!!', 'INSTRUMENTATION_FAILED', 'Process crashed')), 'Native shell runtime failed'
 PY
-adb -e pull /sdcard/Android/data/com.openmine/files/native-runtime-evidence.json verification/native/native-runtime-evidence.json
+adb -e pull /sdcard/Android/data/com.openmine/files/native-runtime-evidence.json verification/native/native-runtime-evidence.json || true
 model_device_path=/sdcard/Android/data/com.openmine/files/runtime-fixtures/model.gguf
 adb -e shell mkdir -p /sdcard/Android/data/com.openmine/files/runtime-fixtures
 adb -e push "$RUNNER_TEMP/openmine-runtime-model.gguf" "$model_device_path"
@@ -45,7 +46,8 @@ adb -e shell am instrument -w -r -e class com.openmine.GgufInferenceTest \
   -e openMineGgufSource "$model_source" \
   com.openmine.test/androidx.test.runner.AndroidJUnitRunner > verification/native/gguf-instrumentation.txt
 cat verification/native/gguf-instrumentation.txt
-python3 - <<'PY'
+gguf_result=0
+python3 - <<'PY' || gguf_result=$?
 import pathlib, re
 text = pathlib.Path('verification/native/gguf-instrumentation.txt').read_text()
 match = re.search(r'OK \((\d+) tests?\)', text)
@@ -55,3 +57,6 @@ assert not any(x in text for x in ('FAILURES!!!', 'INSTRUMENTATION_FAILED', 'Pro
 PY
 adb -e pull /sdcard/Android/data/com.openmine/files/verification/gguf-inference.json verification/native/gguf-inference.json
 sha256sum --check verification/native/installed-apk.sha256
+
+# Both suites ran independently; neither failure can hide the other.
+test "$shell_result" = 0 && test "$gguf_result" = 0

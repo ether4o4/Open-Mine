@@ -39,12 +39,15 @@ private val RuntimeText=Color(0xFFEAF5FF)
 private val RuntimeMuted=Color(0xFF91A9C8)
 private val RuntimeCyan=Color(0xFF38D8FF)
 
-@Composable fun OperationalRuntimeScreen(c:Context,terminalOnly:Boolean=false){
+@Composable fun OperationalRuntimeScreen(c:Context,terminalOnly:Boolean=false,onOpenChat:(()->Unit)?=null){
     val runtime=remember{OpenMineRuntime.get(c)}
     val preferences=remember{c.getSharedPreferences("open_mine_runtime_ui",Context.MODE_PRIVATE)}
     val status by runtime.status.collectAsState()
     val busy by runtime.busy.collectAsState()
     val shellHealthy by runtime.shellHealthy.collectAsState()
+    val shellInstalled by runtime.shellInstalled.collectAsState()
+    val engineInstalled by runtime.engineInstalled.collectAsState()
+    val engineHealthy by runtime.engineHealthy.collectAsState()
     val modelHealthy by runtime.modelHealthy.collectAsState()
     val output by (if(terminalOnly)runtime.terminalOutput else runtime.output).collectAsState()
     val models by runtime.models.collectAsState()
@@ -54,6 +57,7 @@ private val RuntimeCyan=Color(0xFF38D8FF)
     var followOutput by remember{mutableStateOf(preferences.getBoolean("follow_output",true))}
     var review by remember{mutableStateOf<String?>(null)}
     var localMessage by remember{mutableStateOf("")}
+    var deleteWeights by remember{mutableStateOf(false)}
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
         if(uri!=null){localMessage="";runtime.importModel(uri)}
     }
@@ -64,6 +68,8 @@ private val RuntimeCyan=Color(0xFF38D8FF)
             selectedModel=refreshed;preferences.edit().putString("selected_model",selectedModel).apply()
         }
     }
+    if(deleteWeights)AlertDialog(onDismissRequest={deleteWeights=false},title={Text("Delete imported weights?")},text={Text("Deletes $selectedModel from Open Mine. Your original phone file is preserved.")},
+        confirmButton={TextButton({runtime.deleteModel(selectedModel);deleteWeights=false}){Text("Delete weights")}},dismissButton={TextButton({deleteWeights=false}){Text("Keep")}})
     review?.let{exactCommand->CommandReviewDialog(exactCommand,
         onDismiss={review=null},onRun={
             review=null
@@ -73,14 +79,18 @@ private val RuntimeCyan=Color(0xFF38D8FF)
     LazyColumn(Modifier.fillMaxSize().imePadding().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
         item{
             Text(if(terminalOnly)"LINUX SHELL"else "ON-DEVICE GGUF",color=RuntimeText,fontSize=24.sp,fontWeight=FontWeight.Bold)
-            Text(if(terminalOnly)"A real persistent Bash session in Open Mine's Linux environment. Commands run only after your review. Working directory and completed output survive restart; exported shell variables last for the current shell process."
-                else "Import GGUF weights, build the engine, and start a local model server. AI Chat uses http://127.0.0.1:8080/v1 with model ID local after its health check passes.",color=RuntimeMuted,fontSize=14.sp)
+            Text(if(terminalOnly)"Alpine Linux in Android PRoot, with app-private files and Android kernel limits; this is not root access to your phone. Each reviewed foreground job has its own process tree. Completed cwd/output survive restart; exported variables persist until this app process ends. Detached background jobs are not retained."
+                else "Import GGUF weights, install the engine, and start a local model server. AI Chat uses http://127.0.0.1:8080/v1 with model ID local after its health check passes.",color=RuntimeMuted,fontSize=14.sp)
         }
         item{RuntimeStatus(status,busy,shellHealthy,modelHealthy)}
         item{
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 OutlinedButton({localMessage="";runtime.verifyShell()},enabled=!busy){Text("Check shell")}
-                if(BuildConfig.DEBUG)OutlinedButton({localMessage="";runtime.setup()},enabled=!busy){Text(if(shellHealthy)"Repair setup"else "Set up shell")}
+                if(BuildConfig.DEBUG)OutlinedButton({localMessage="";runtime.setup()},enabled=!busy && !shellInstalled){Text(if(shellInstalled)"Shell installed successfully"else "Download shell")}
+            }
+            if(shellInstalled){
+                Text(if(shellHealthy)"Installed files retained · shell execution check passed"else "Installed files retained · shell execution check needed",color=RuntimeMuted,fontSize=12.sp)
+                if(BuildConfig.DEBUG)TextButton({localMessage="";runtime.setup()},enabled=!busy){Text("Repair setup")}
             }
             if(BuildConfig.DEBUG)Text("Setup downloads Linux prerequisites. Keep Open Mine in the foreground; cancelled or failed setup can be retried without deleting existing Linux files.",color=RuntimeMuted,fontSize=12.sp)
             else Text("Runtime downloads are disabled in this build. Shell execution requires already-installed, compatible prerequisites.",color=RuntimeMuted,fontSize=12.sp)
@@ -90,6 +100,7 @@ private val RuntimeCyan=Color(0xFF38D8FF)
                 OutlinedTextField(command,{command=it;preferences.edit().putString("command_draft",it).apply()},Modifier.fillMaxWidth(),
                     enabled=!busy,label={Text("Shell command")},supportingText={Text("${command.toByteArray(Charsets.UTF_8).size}/8192 bytes · local draft")},minLines=2,maxLines=8,
                     keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.None,autoCorrectEnabled=false))
+                Text("Install packages with apk add. Example: apk add --no-cache git",color=RuntimeMuted,fontSize=12.sp)
                 if(!shellHealthy)Text("Check or set up the shell before running commands.",color=RuntimeMuted,fontSize=12.sp)
             }
             item{Button({
@@ -98,8 +109,12 @@ private val RuntimeCyan=Color(0xFF38D8FF)
             },enabled=!busy && shellHealthy && command.isNotBlank(),modifier=Modifier.fillMaxWidth()){Text("Review and run command")}}
         }else{
             if(BuildConfig.DEBUG)item{
-                Button({localMessage="";runtime.engine("provision")},enabled=!busy && shellHealthy,modifier=Modifier.fillMaxWidth()){Text("Build / repair GGUF engine")}
-                Text("The engine build downloads source and compiler packages and may take several minutes. Output and errors below come from the actual build.",color=RuntimeMuted,fontSize=12.sp)
+                Button({localMessage="";runtime.engine("provision")},enabled=!busy && shellHealthy && !engineInstalled,modifier=Modifier.fillMaxWidth()){Text(if(engineInstalled)"Engine installed successfully"else "Install GGUF engine")}
+                if(engineInstalled){
+                    Text(if(engineHealthy)"Engine execution verified"else "Installed files retained · engine execution check needed",color=RuntimeMuted,fontSize=12.sp)
+                    TextButton({localMessage="";runtime.engine("provision")},enabled=!busy && shellHealthy){Text("Check / repair engine")}
+                }
+                Text("ARM64 phones use the engine included in the app; setup downloads required Linux libraries. Other devices may build from source. Output and errors below come from the actual operation.",color=RuntimeMuted,fontSize=12.sp)
             }
             item{OutlinedButton({localMessage="";picker.launch(arrayOf("application/octet-stream","*/*"))},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Import GGUF weights")}}
             if(models.isEmpty())item{Text("No model weights are imported. Choose a small quantized GGUF that fits this device's memory. Import checks the file header; loading verifies architecture and runtime compatibility.",color=RuntimeMuted,fontSize=14.sp)}
@@ -112,11 +127,13 @@ private val RuntimeCyan=Color(0xFF38D8FF)
                 }
             }
             item{Button({localMessage="";runtime.engine("serve",selectedModel)},enabled=!busy && shellHealthy && selectedModel in models,modifier=Modifier.fillMaxWidth()){Text("Load selected model")}}
+            if(modelHealthy && onOpenChat!=null)item{Button(onOpenChat,enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Open chat")}}
             item{Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 OutlinedButton({localMessage="";runtime.engine("status")},enabled=!busy && shellHealthy){Text("Check model health")}
-                OutlinedButton({localMessage="";runtime.engine("stop")},enabled=!busy && shellHealthy){Text("Stop model")}
+                OutlinedButton({localMessage="";runtime.engine("stop")},enabled=!busy && shellHealthy){Text("Stop / unload model")}
             }}
         }
+        if(!terminalOnly && selectedModel in models)item{OutlinedButton({deleteWeights=true},enabled=!busy && !modelHealthy){Text("Delete selected weights")}}
         if(busy)item{OutlinedButton({runtime.cancel();localMessage="Cancellation requested. Wait for the operation to stop before retrying."},modifier=Modifier.fillMaxWidth()){Text("Cancel operation")}}
         if(localMessage.isNotBlank())item{Text(localMessage,color=RuntimeCyan,modifier=Modifier.semantics{liveRegion=LiveRegionMode.Polite})}
         item{RuntimeOutput(output,followOutput){followOutput=it;preferences.edit().putBoolean("follow_output",it).apply()}}

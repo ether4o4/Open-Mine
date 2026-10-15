@@ -20,7 +20,8 @@ PID_FILE="$RUN_DIR/server.pid"
 META_FILE="$RUN_DIR/server.json"
 DEFAULT_PORT=8080
 DEFAULT_QUANT_PREFERENCE="Q4_K_M"
-LLAMA_CPP_REPO="https://github.com/ggerganov/llama.cpp"
+LLAMA_CPP_REPO="https://github.com/ggml-org/llama.cpp"
+LLAMA_CPP_REVISION="74ade52741203e5c8f81eaf06a96cb1cfe15f2a3"
 
 mkdir -p "$BIN_DIR" "$MODELS_DIR" "$BUILD_DIR" "$RUN_DIR" "$LOGS_DIR"
 
@@ -164,6 +165,33 @@ cmd_provision() {
     # check fails (network down, release not built yet, arch mismatch).
     if [ -x "$LLAMA_SERVER" ] && "$LLAMA_SERVER" --version >/dev/null 2>&1; then
         emit "{\"ok\":true,\"already_built\":true,\"path\":\"$LLAMA_SERVER\"}"
+        provision_emitted=1
+        return 0
+    fi
+    # The Android ARM64 app carries a checksum-verified engine. Its musl C++
+    # dependencies are small packages; a missing library must not trigger a
+    # compiler/toolchain download and a lengthy build on the phone.
+    local bundled="$ROOT/bundled/llama-server"
+    if [ "$(uname -m)" = "aarch64" ] && [ -x "$bundled" ]; then
+        local bundled_log="$LOGS_DIR/bundled-engine.log"
+        if ! timeout 10 "$bundled" --version >"$bundled_log" 2>&1; then
+            log "provision: installing ARM64 engine shared-library dependencies"
+            if ! apk add --no-cache libstdc++ libgcc >>"$bundled_log" 2>&1; then
+                emit "{\"ok\":false,\"error\":\"engine_dependencies_failed\",\"log_path\":\"$bundled_log\",\"hint\":\"Connect to the internet and retry engine setup to install the Linux C++ libraries.\"}"
+                provision_emitted=1
+                return 1
+            fi
+        fi
+        if ! timeout 10 "$bundled" --version >>"$bundled_log" 2>&1; then
+            emit "{\"ok\":false,\"error\":\"bundled_engine_execution_failed\",\"log_path\":\"$bundled_log\",\"hint\":\"The bundled ARM64 engine did not execute. Existing weights and engine files were preserved.\"}"
+            provision_emitted=1
+            return 1
+        fi
+        cp "$bundled" "$LLAMA_SERVER.installing"
+        chmod 755 "$LLAMA_SERVER.installing"
+        if [ -e "$LLAMA_SERVER" ]; then cp -p "$LLAMA_SERVER" "$LLAMA_SERVER.failed"; fi
+        mv -f "$LLAMA_SERVER.installing" "$LLAMA_SERVER"
+        emit "{\"ok\":true,\"bundled\":true,\"path\":\"$LLAMA_SERVER\"}"
         provision_emitted=1
         return 0
     fi
@@ -317,11 +345,14 @@ cmd_provision() {
     if [ ! -d "$src/.git" ]; then
         log "provision: cloning llama.cpp (shallow)"
         rm -rf "$src"
-        git clone --depth=1 "$LLAMA_CPP_REPO" "$src" >&2 || {
+        mkdir -p "$src"
+        if ! (git -C "$src" init && git -C "$src" remote add origin "$LLAMA_CPP_REPO" &&
+            git -C "$src" fetch --depth=1 origin "$LLAMA_CPP_REVISION" &&
+            git -C "$src" checkout --detach FETCH_HEAD) >&2; then
             emit '{"ok":false,"error":"clone_failed"}'
             provision_emitted=1
             return 1
-        }
+        fi
     else
         log "provision: reusing existing llama.cpp checkout"
     fi
@@ -641,11 +672,12 @@ cmd_serve() {
     local log_file="$LOGS_DIR/server.log" ncpu threads
     : > "$log_file"
     ncpu=$(nproc 2>/dev/null || echo 4)
-    if [ "$ncpu" -gt 4 ]; then threads=$((ncpu - 2)); else threads="$ncpu"; fi
+    if [ "$ncpu" -gt 4 ]; then threads=4; else threads="$ncpu"; fi
     [ "$threads" -lt 1 ] && threads=1
     log "serve: launching llama-server on 127.0.0.1:$port with $threads threads"
     nohup "$LLAMA_SERVER" --host 127.0.0.1 --port "$port" --alias local -m "$model_path" \
-        --n-gpu-layers 0 --threads "$threads" --ctx-size 4096 >"$log_file" 2>&1 &
+        --n-gpu-layers 0 --threads "$threads" --ctx-size 4096 --parallel 1 \
+        --batch-size 128 --ubatch-size 128 >"$log_file" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
     jq -nc --argjson pid "$pid" --argjson port "$port" --arg model "$model" \

@@ -81,6 +81,7 @@ private class LibraryDraftController(private val store: LibrarySessionStore) {
         val saved = state.first { (it.loaded && !it.saving) || (!it.loaded && it.error.isNotBlank()) }
         check(saved.loaded && saved.error.isBlank()) { saved.error.ifBlank { "Library session was not saved" } }
     }
+    suspend fun pauseForRecovery() { flush(); scope.cancel() }
 }
 
 private object LibraryDrafts {
@@ -90,7 +91,13 @@ private object LibraryDrafts {
         val file = File(context.filesDir, "library-sessions/$key.json")
         return controllers.getOrPut(file.absolutePath) { LibraryDraftController(LibrarySessionStore(file)) }
     }
+    suspend fun pauseForRecovery() {
+        controllers.values.forEach { it.pauseForRecovery() }
+        controllers.clear()
+    }
 }
+
+internal suspend fun pauseLibraryForRecovery() = LibraryDrafts.pauseForRecovery()
 
 /** Local CRUD and exact-token retrieval. Importing a procedure never authorizes its execution. */
 @Composable

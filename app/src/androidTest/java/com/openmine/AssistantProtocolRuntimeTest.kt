@@ -28,7 +28,7 @@ class AssistantProtocolRuntimeTest {
                 val partials=mutableListOf<String>()
                 val reply=ModelClient.ask(context,server.endpoint,"fixture-model","","Explain the engine",onText={partials.add(it)},reviewTool={proposal->
                     reviews++;assertEquals("engine",JSONObject(proposal.arguments).getString("query"));true
-                })
+                },retrievalScope=RetrievalScope("fixture",selectedIds=setOf(record.id)))
                 server.assertFinished()
                 assertEquals(1,reviews)
                 assertEquals("Fixture protocol completed",reply.text)

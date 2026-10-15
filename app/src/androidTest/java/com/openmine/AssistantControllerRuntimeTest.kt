@@ -28,6 +28,38 @@ import java.util.concurrent.atomic.AtomicInteger
 class AssistantControllerRuntimeTest {
     @get:Rule val compose=createAndroidComposeRule<ComponentActivity>()
 
+    @Test fun endpointCredentialLookupRunsOffMainAndCannotReplaceATypedKey(){
+        val entered=CountDownLatch(1)
+        val release=CountDownLatch(1)
+        val finished=CountDownLatch(1)
+        val lookupThread=java.util.concurrent.atomic.AtomicReference<Thread>()
+        isolated(credentialReader={endpoint->
+            if(endpoint=="https://first.example/v1"){
+                lookupThread.set(Thread.currentThread());entered.countDown()
+                try{check(release.await(5,TimeUnit.SECONDS));"stored-first-key"}finally{finished.countDown()}
+            }else if(endpoint=="https://second.example/v1")"stored-second-key"else ""
+        }){_,controller->
+            try{
+                compose.runOnUiThread{controller.configure("https://first.example/v1","model")}
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                assertNotSame(android.os.Looper.getMainLooper().thread,lookupThread.get())
+                compose.runOnUiThread{controller.setKey("user-typed-key")}
+                assertFalse(controller.state.value.credentialLoading)
+                release.countDown()
+                assertTrue(finished.await(2,TimeUnit.SECONDS))
+                val stableUntil=SystemClock.elapsedRealtime()+300
+                while(SystemClock.elapsedRealtime()<stableUntil){
+                    assertEquals("Late lookup must preserve manual input","user-typed-key",controller.state.value.apiKey)
+                    SystemClock.sleep(20)
+                }
+                compose.runOnUiThread{controller.configure("https://second.example/v1","model")}
+                await("second endpoint credential loaded"){!controller.state.value.credentialLoading && controller.state.value.apiKey=="stored-second-key"}
+                controller.setKey("new-user-key")
+                assertEquals("new-user-key",controller.state.value.apiKey)
+            }finally{release.countDown()}
+        }
+    }
+
     @Test fun aFailedQuestionRetriesWithoutDestroyingAnUnsentDraft(){
         isolated { context,controller->ControllerServer().use{server->
             server.fail=true
@@ -86,6 +118,7 @@ class AssistantControllerRuntimeTest {
     @Test fun activityRecreationKeepsTheInFlightRequestAndMemoryOnlyKey(){
         isolated { context,controller->ControllerServer(hold=true).use{server->
             compose.setContent{AssistantRequestLifecycle(compose.activity,controller);Text("Assistant lifecycle verification")}
+            controller.configure(server.endpoint,"fixture-model")
             controller.setKey("test-memory-only-key")
             start(controller,server)
             await("first streamed text"){controller.state.value.session.current.turns.lastOrNull()?.answer==ControllerServer.PARTIAL}
@@ -114,7 +147,7 @@ class AssistantControllerRuntimeTest {
         val store=AssistantSessionStore(File(context.filesDir,"assistant/sessions-v1.json"))
         await("final persisted assistant state"){runCatching{store.load()?.let(predicate)==true}.getOrDefault(false)}
     }
-    private fun isolated(block:(Context,AssistantSessionController)->Unit){
+    private fun isolated(credentialReader:((String)->String)?=null,block:(Context,AssistantSessionController)->Unit){
         val target=InstrumentationRegistry.getInstrumentation().targetContext
         val prefix="assistant-controller-${UUID.randomUUID()}"
         val directory=File(target.cacheDir,prefix).apply{mkdirs()}
@@ -123,7 +156,7 @@ class AssistantControllerRuntimeTest {
             override fun getApplicationContext():Context=this
             override fun getSharedPreferences(name:String,mode:Int):SharedPreferences=target.getSharedPreferences("$prefix-$name",mode)
         }
-        val controller=AssistantSessionController(context)
+        val controller=AssistantSessionController(context,credentialReader)
         try{block(context,controller)}finally{
             controller.cancel("Cancelled by fixture cleanup")
             directory.deleteRecursively()

@@ -8,3 +8,8 @@ local.properties
 *.p12
 *-private.pem
 signing-backup/
+
+verification/
+
+__pycache__/
+*.pyc

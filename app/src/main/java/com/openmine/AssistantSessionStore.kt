@@ -26,7 +26,11 @@ data class AssistantConversation(
     val id:String=UUID.randomUUID().toString(),
     val title:String="New conversation",
     val draft:String="",
-    val turns:List<AssistantTurn> = emptyList()
+    val turns:List<AssistantTurn> = emptyList(),
+    val projectId:String? = null,
+    val sourceIds:Set<String> = emptySet(),
+    val sharedMemory:Boolean = false,
+    val excludedIds:Set<String> = emptySet(),
 )
 
 data class AssistantSession(
@@ -34,9 +38,10 @@ data class AssistantSession(
     val model:String="",
     val conversations:List<AssistantConversation> = listOf(AssistantConversation()),
     val selectedId:String=conversations.first().id,
-    val toolsEnabled:Boolean=true
+    val toolsEnabled:Boolean=false
 ) {
     val current:AssistantConversation get()=conversations.first{it.id==selectedId}
+    fun retrievalScope() = RetrievalScope(current.id,current.projectId,current.sourceIds,current.sharedMemory,current.excludedIds)
     fun updateCurrent(change:(AssistantConversation)->AssistantConversation)=copy(conversations=conversations.map{if(it.id==selectedId)change(it) else it})
     fun recoverInterrupted():AssistantSession=copy(conversations=conversations.map{conversation->
         conversation.copy(turns=conversation.turns.map{turn->
@@ -72,6 +77,8 @@ class AssistantSessionStore(private val file:File) {
         fun encode(session:AssistantSession):String=JSONObject().put("schema",1).put("endpoint",session.endpoint).put("model",session.model).put("toolsEnabled",session.toolsEnabled)
             .put("selectedId",session.selectedId).put("conversations",JSONArray(session.conversations.map{conversation->
                 JSONObject().put("id",conversation.id).put("title",conversation.title).put("draft",conversation.draft)
+                    .put("projectId",conversation.projectId ?: JSONObject.NULL).put("sourceIds",strings(conversation.sourceIds.toList()))
+                    .put("sharedMemory",conversation.sharedMemory).put("excludedIds",strings(conversation.excludedIds.toList()))
                     .put("turns",JSONArray(conversation.turns.map{turn->
                         JSONObject().put("id",turn.id).put("question",turn.question).put("answer",turn.answer).put("state",turn.state.name)
                             .put("detail",turn.detail).put("endpoint",turn.endpoint).put("model",turn.model).put("createdAt",turn.createdAt)
@@ -89,7 +96,9 @@ class AssistantSessionStore(private val file:File) {
                     val t=turns.getJSONObject(i)
                     AssistantTurn(t.getString("id"),t.getString("question"),t.getString("answer"),AssistantTurnState.valueOf(t.getString("state")),
                         t.getString("detail"),t.getString("endpoint"),t.getString("model"),t.getLong("createdAt"),list(t.getJSONArray("sourceIds")),list(t.getJSONArray("toolAudit")))
-                })
+                }, row.optString("projectId").takeIf { it.isNotBlank() && it != "null" },
+                    list(row.optJSONArray("sourceIds") ?: JSONArray()).toSet(), row.optBoolean("sharedMemory",false),
+                    list(row.optJSONArray("excludedIds") ?: JSONArray()).toSet())
             }
             val selected=json.getString("selectedId")
             require(conversations.map{it.id}.toSet().size==conversations.size && conversations.any{it.id==selected}){"Assistant conversation IDs are invalid; existing data was preserved."}

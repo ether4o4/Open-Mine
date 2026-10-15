@@ -72,6 +72,10 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
     var editorLoaded by remember { mutableStateOf(false) }
     var discardDraft by remember { mutableStateOf(false) }
     var draftWriteJob by remember { mutableStateOf<Job?>(null) }
+    // Updated in the edit callback, before recomposition or the debounce can run. The serial
+    // draft executor also clears this checkpoint as part of Save/Discard, preventing a later
+    // navigation flush from recreating a draft that the user has already committed or discarded.
+    val pendingDraft = remember(store) { java.util.concurrent.atomic.AtomicReference<ProjectDraft?>(null) }
 
     suspend fun refresh() {
         val snapshot = runInterruptible(Dispatchers.IO) { store.tasks() to store.listFiles() }
@@ -104,13 +108,14 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
         }
     }
     fun closeEditor() {
-        val name = editorName ?: return
+        if (editorName == null) return
         runAction("Preserving draft") {
             draftWriteJob?.cancelAndJoin()
-            if (editorLoaded && editorDirty) projectDraftIo { store.saveDraft(ProjectDraft(name, editorText, editorModified)) }
+            projectDraftIo { pendingDraft.get()?.let(store::saveDraft) }
             editorName = null
             editorLoaded = false
             editorDirty = false
+            pendingDraft.set(null)
             "Draft preserved locally"
         }
     }
@@ -136,38 +141,43 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
             editorModified = opened.second
             editorDirty = opened.third
             editorLoaded = true
+            pendingDraft.set(if (opened.third) ProjectDraft(name, opened.first, opened.second) else null)
             if (opened.third) "Recovered the unsaved local draft" else "UTF-8 text editor · drafts saved locally"
         }
     }
     // Short debounce limits disk churn; explicit Back/Save flushes before the screen closes.
     LaunchedEffect(editorName, editorText, editorDirty, editorLoaded) {
-        val name = editorName ?: return@LaunchedEffect
-        if (!editorLoaded || !editorDirty) return@LaunchedEffect
+        if (editorName == null || !editorLoaded || !editorDirty) return@LaunchedEffect
         draftWriteJob = coroutineContext.job
         delay(250)
-        try { projectDraftIo { store.saveDraft(ProjectDraft(name, editorText, editorModified)) } }
+        try { projectDraftIo { pendingDraft.get()?.let(store::saveDraft) } }
         catch (failure: Exception) { if (failure is CancellationException) throw failure else error = "Draft not saved: ${failure.message}" }
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val latestDraft by rememberUpdatedState(if (editorLoaded && editorDirty && editorName != null) ProjectDraft(editorName!!, editorText, editorModified) else null)
     DisposableEffect(lifecycle, store) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) latestDraft?.let { draft ->
-                // Outlives the UI scope so rotating or backgrounding does not cancel the final flush.
-                ProjectDraftFlush.executor.execute {
-                    val result = runCatching { store.saveDraft(draft) }
-                    preferences.edit().apply {
-                        if (result.isFailure) putString("${record.id}.draftError", result.exceptionOrNull()?.message ?: "Storage failure")
-                        else remove("${record.id}.draftError")
-                    }.commit()
-                }
+        fun flushPendingDraft() {
+            // Read after earlier Save/Discard work on this same executor. This outlives the UI
+            // scope on tab changes, rotation and backgrounding, without persisting raw text in a Bundle.
+            ProjectDraftFlush.executor.execute {
+                val draft = pendingDraft.get() ?: return@execute
+                val result = runCatching { store.saveDraft(draft) }
+                preferences.edit().apply {
+                    if (result.isFailure) putString("${record.id}.draftError", result.exceptionOrNull()?.message ?: "Storage failure")
+                    else remove("${record.id}.draftError")
+                }.commit()
             }
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) flushPendingDraft()
             if (event == Lifecycle.Event.ON_START) preferences.getString("${record.id}.draftError", null)?.let {
-                error = "Could not preserve the latest draft while backgrounded: $it"
+                error = "Could not preserve the latest draft: $it"
             }
         }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycle.removeObserver(observer)
+            flushPendingDraft()
+        }
     }
 
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -234,11 +244,12 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
                     Button({
                         val name = editorName ?: return@Button
                         val text = editorText
+                        val checkpoint = pendingDraft.get()
                         runAction("Saving file") {
                             draftWriteJob?.cancelAndJoin()
                             val saved = projectDraftIo {
                                 store.saveDraft(ProjectDraft(name, text, editorModified))
-                                store.saveText(name, text, editorModified)
+                                store.saveText(name, text, editorModified).also { pendingDraft.compareAndSet(checkpoint, null) }
                             }
                             editorModified = saved.modified
                             editorDirty = false
@@ -249,7 +260,11 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
                     OutlinedButton({ saveCopy = true; newName = "copy-${editorName.orEmpty()}".take(120); newFile = true }, enabled = busy.isEmpty()) { Text("Save a copy") }
                 }
                 OutlinedTextField(editorText, { value ->
-                    if (value.toByteArray(Charsets.UTF_8).size <= ProjectStore.MAX_TEXT_BYTES) { editorText = value; editorDirty = true }
+                    if (value.toByteArray(Charsets.UTF_8).size <= ProjectStore.MAX_TEXT_BYTES) {
+                        editorText = value
+                        editorDirty = true
+                        pendingDraft.set(ProjectDraft(editorName!!, value, editorModified))
+                    }
                     else error = "Text editor limit: 1 MiB"
                 }, Modifier.fillMaxWidth().weight(1f), label = { Text("File contents") }, enabled = busy.isEmpty(), textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace))
             } else {
@@ -289,10 +304,15 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
                     items(files, key = { it.name }) { file ->
                         OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
                             Text(file.name, style = MaterialTheme.typography.titleMedium)
-                            Text("${file.bytes} bytes · stored offline", style = MaterialTheme.typography.bodySmall)
+                            Text("${file.bytes} bytes · stored offline. Ingest makes supported text, PDF and DOCX searchable within this project.", style = MaterialTheme.typography.bodySmall)
                             Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                TextButton({ editorName = file.name }, enabled = busy.isEmpty()) { Text("View / edit text") }
+                                TextButton({ editorName = file.name }, enabled = busy.isEmpty() && file.bytes<=ProjectStore.MAX_TEXT_BYTES && file.name.substringAfterLast('.',"").lowercase() !in setOf("gguf","pdf","docx","zip")) { Text("View / edit text") }
                                 TextButton({ exportName = file.name; exportPicker.launch(file.name) }, enabled = busy.isEmpty()) { Text("Export") }
+                                TextButton({ runAction("Extracting and indexing document") { runInterruptible(Dispatchers.IO) {
+                                    val source=java.io.File(context.filesDir,"open_mine_projects/${record.id}/files/${file.name}")
+                                    DocumentKnowledge(context).ingest(record.id,file.name,source.inputStream()){if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException("Ingestion cancelled")}
+                                } } }, enabled=busy.isEmpty()){Text("Ingest / index")}
+                                TextButton({ runAction("Forgetting document knowledge") { runInterruptible(Dispatchers.IO){DocumentKnowledge(context).forget(record.id,file.name)};"Extracted text and imported knowledge copy removed; project file preserved" } },enabled=busy.isEmpty()){Text("Forget knowledge")}
                                 TextButton({ deleteFile = file }, enabled = busy.isEmpty()) { Text("Delete") }
                             }
                         } }
@@ -336,12 +356,18 @@ fun ProjectWorkspace(record: StrictObject, onBack: () -> Unit) {
         }, enabled = busy.isEmpty() && (!saveCopy || editorLoaded)) { Text(if (importing) "Import" else "Create") } }, dismissButton = { TextButton({ if (busy.isNotEmpty()) operation?.cancel() else { newFile = false; importUri = null; saveCopy = false } }) { Text(if (busy.isNotEmpty()) "Cancel operation" else "Cancel") } })
     }
     deleteTask?.let { task -> ProjectDeleteDialog("Delete task “${task.title}”?", busy.isNotEmpty(), { deleteTask = null }, error) { runAction("Deleting task") { runInterruptible(Dispatchers.IO) { store.deleteTask(task.id) }; deleteTask = null; "Task deleted" } } }
-    deleteFile?.let { file -> ProjectDeleteDialog("Delete “${file.name}” and its saved draft?", busy.isNotEmpty(), { deleteFile = null }, error) { runAction("Deleting file") { runInterruptible(Dispatchers.IO) { store.deleteFile(file.name) }; deleteFile = null; "File deleted" } } }
+    deleteFile?.let { file -> ProjectDeleteDialog("Delete “${file.name}” and its saved draft?", busy.isNotEmpty(), { deleteFile = null }, error) { runAction("Deleting file") { runInterruptible(Dispatchers.IO) { DocumentKnowledge(context).forget(record.id,file.name); store.deleteFile(file.name) }; deleteFile = null; "File deleted" } } }
     if (discardDraft) ProjectDeleteDialog("Discard unsaved changes? The last saved file will be restored.", busy.isNotEmpty(), { discardDraft = false }, error) {
         val name = editorName ?: return@ProjectDeleteDialog
         runAction("Restoring saved file") {
             draftWriteJob?.cancelAndJoin()
-            val saved = projectDraftIo { store.readText(name).also { store.deleteDraft(name) } to store.listFiles().first { it.name == name }.modified }
+            val saved = projectDraftIo {
+                val text = store.readText(name)
+                val modified = store.listFiles().first { it.name == name }.modified
+                store.deleteDraft(name)
+                pendingDraft.set(null)
+                text to modified
+            }
             editorText = saved.first
             editorModified = saved.second
             editorDirty = false

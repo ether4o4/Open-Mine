@@ -44,6 +44,12 @@ class SafWorkflowTest {
             val flags = (if (it.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or (if (it.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
             context.contentResolver.releasePersistableUriPermission(it.uri, flags)
         }
+        instrumentation.uiAutomation.executeShellCommand(
+            "am broadcast --receiver-foreground --include-stopped-packages -n com.openmine.test/com.openmine.FixtureGrantResetReceiver"
+        ).use { descriptor -> android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+            val result=input.bufferedReader().readText()
+            assertTrue("Test owner did not reset fixture grants: $result",result.contains("Broadcast completed: result=37"))
+        } }
     }
 
     @After fun removeOnlyThisProjectsFixtures() {
@@ -155,18 +161,29 @@ class SafWorkflowTest {
 
     private fun chooseTestRoot() {
         awaitPicker()
-        // A subsequent save picker usually remembers this provider. Its title in the toolbar
-        // and visible fixture entries are enough to establish that the correct root is open.
-        if (device.hasObject(By.text(TestDocumentsProvider.ROOT_TITLE)) &&
-            (device.hasObject(By.text(TestDocumentsProvider.INVALID_NAME)) || device.hasObject(By.text(TestDocumentsProvider.PROJECT_NAME)))) return
-        val roots = device.findObject(By.desc(Pattern.compile("(?i)(show roots|show navigation drawer|navigate up)")))
-            ?: device.findObject(By.res(pickerPackage, "toolbar").hasDescendant(By.clazz("android.widget.ImageButton")))?.findObject(By.clazz("android.widget.ImageButton"))
-            ?: error("DocumentsUI root selector was not found")
-        roots.click()
-        val root = device.wait(Until.findObject(By.text(TestDocumentsProvider.ROOT_TITLE)), 10_000)
-            ?: error("The test DocumentsProvider is not available in Android DocumentsUI")
-        root.click()
-        device.wait(Until.gone(By.res(pickerPackage, "roots_list")), 5_000)
+        val drawer = By.res(pickerPackage, "roots_list")
+        if (!device.hasObject(drawer)) {
+            val roots = device.wait(Until.findObject(By.desc(Pattern.compile("(?i)(show roots|show navigation drawer|navigate up)"))), 5_000)
+                ?: error("DocumentsUI root selector was not found")
+            roots.click()
+        }
+        assertTrue("DocumentsUI navigation drawer did not open", device.wait(Until.hasObject(drawer), 5_000))
+        // The toolbar and drawer share the root title. Match only the actual drawer
+        // row, and resolve it again after layout changes rather than reusing UiObject2.
+        val rootSelector = By.text(TestDocumentsProvider.ROOT_TITLE).hasAncestor(drawer)
+        var selected = false
+        repeat(3) {
+            if (!selected) {
+                device.waitForIdle()
+                val root = device.wait(Until.findObject(rootSelector), 5_000)
+                    ?: error("The test DocumentsProvider is not in the DocumentsUI drawer")
+                try { root.click(); selected = true }
+                catch (_: androidx.test.uiautomator.StaleObjectException) { /* reacquire the same row */ }
+            }
+        }
+        assertTrue("Could not select the provider root", selected)
+        assertTrue("Provider drawer did not close", device.wait(Until.gone(drawer), 5_000))
+        assertTrue("Provider directory did not load", device.wait(Until.hasObject(By.res(pickerPackage, "dir_list")), 10_000))
         device.waitForIdle()
     }
 
@@ -174,10 +191,11 @@ class SafWorkflowTest {
         chooseTestRoot()
         var document = device.wait(Until.findObject(By.text(name)), 5_000)
         if (document == null) {
-            val list = device.findObject(By.res(pickerPackage, "dir_list")) ?: device.findObject(By.scrollable(true))
+            var list = device.findObject(By.res(pickerPackage, "dir_list")) ?: device.findObject(By.scrollable(true))
             repeat(4) {
                 if (document == null && list != null) {
-                    list.scroll(androidx.test.uiautomator.Direction.DOWN, 0.7f)
+                    list = device.findObject(By.res(pickerPackage, "dir_list")) ?: device.findObject(By.scrollable(true))
+                    list?.scroll(androidx.test.uiautomator.Direction.DOWN, 0.7f)
                     document = device.findObject(By.text(name))
                 }
             }

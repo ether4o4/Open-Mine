@@ -36,7 +36,7 @@ class KnowledgeRepository(private val filesDir: File, private val onChange: () -
         val terms = tokenize(query.take(8192))
         val entries = loadIndex(readSources())
         if (terms.isEmpty()) return emptyList()
-        return entries.map { it to terms.count(it.terms::contains) }
+        return entries.filter { RetrievalPolicy.indexable(it.record) }.map { it to terms.count(it.terms::contains) }
             .filter { it.second > 0 }
             .sortedWith(compareByDescending<Pair<Entry, Int>> { it.second }
                 .thenByDescending { it.first.record.sections["CONTEXT_INDEX"]?.get("INDEX_PRIORITY")?.toIntOrNull() ?: 0 }
@@ -146,10 +146,10 @@ class KnowledgeRepository(private val filesDir: File, private val onChange: () -
         val rows = JSONArray()
         for (source in sources.files) {
             val record = source.record ?: continue
-            val terms = tokenize(record.sections.values.flatMap { it.values }.joinToString(" ")).sorted()
+            val terms = if (RetrievalPolicy.indexable(record)) tokenize(record.sections.values.flatMap { it.values }.joinToString(" ")).sorted() else emptyList()
             val chunks = JSONArray()
             record.sections.forEach { (section, values) -> values.forEach { (label, value) ->
-                if (value.isNotBlank() && !value.equals("NONE", true)) chunks.put(JSONObject()
+                if (RetrievalPolicy.indexable(record) && value.isNotBlank() && !value.equals("NONE", true)) chunks.put(JSONObject()
                     .put("OBJECT_ID", record.id).put("OBJECT_TYPE", record.type).put("OBJECT_TITLE", record.title)
                     .put("OBJECT_STATUS", record.status).put("SECTION", section).put("LABEL", label)
                     .put("CHUNK_ID", "${record.id}.$section.$label")
@@ -204,7 +204,7 @@ class KnowledgeRepository(private val filesDir: File, private val onChange: () -
                     chunk.getString("CHUNK_ID") == "${record.id}.$section.$label" &&
                     record.sections[section]?.get(label) == chunk.getString("CONTENT")) { "Invalid index chunk" }
             }
-            check(chunks.length() == record.sections.values.sumOf { it.values.count { value -> value.isNotBlank() && !value.equals("NONE", true) } }) { "Incomplete index chunks" }
+            check(chunks.length() == if (RetrievalPolicy.indexable(record)) record.sections.values.sumOf { it.values.count { value -> value.isNotBlank() && !value.equals("NONE", true) } } else 0) { "Incomplete index chunks" }
             Entry(record, values.toSet(), chunks.length())
         }
     }
@@ -214,7 +214,7 @@ class KnowledgeRepository(private val filesDir: File, private val onChange: () -
     }
 
     companion object {
-        private const val INDEX_VERSION = 2
+        private const val INDEX_VERSION = 3
         private const val MAX_INDEX_BYTES = 64 * 1024 * 1024
         private val tokenPattern = Regex("[a-z0-9._-]{2,}")
         private val recordOrder = compareBy<StrictObject> { it.title.lowercase(Locale.ROOT) }.thenBy { it.id }

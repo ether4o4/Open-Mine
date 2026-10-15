@@ -68,6 +68,36 @@ class EngineLifecycle(unittest.TestCase):
     def test_existing_engine_fast_path_runs_without_package_install(self):
         self.assertTrue(self.run_engine("provision")["already_built"])
 
+    def test_bundled_arm64_path_installs_without_compiler_or_download(self):
+        # Host executable + architecture shim exercises provisioning control flow,
+        # not ARM execution or inference. No package manager is invoked.
+        (self.root / "bin/llama-server").unlink()
+        (self.root / "bundled").mkdir()
+        shutil.copy2(self.binary, self.root / "bundled/llama-server")
+        shim = self.root / "shim"
+        shim.mkdir()
+        (shim / "uname").write_text("#!/bin/sh\necho aarch64\n")
+        (shim / "uname").chmod(0o755)
+        (shim / "apk").write_text("#!/bin/sh\necho unexpected package install >&2\nexit 99\n")
+        (shim / "apk").chmod(0o755)
+        self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
+        self.assertTrue(self.run_engine("provision")["bundled"])
+        self.assertEqual(self.binary.read_bytes(), (self.root / "bin/llama-server").read_bytes())
+
+    def test_broken_bundle_reports_dependency_failure_without_touching_old_engine(self):
+        (self.root / "bin/llama-server").write_text("existing incompatible engine")
+        (self.root / "bundled").mkdir()
+        (self.root / "bundled/llama-server").write_text("#!/bin/sh\nexit 1\n")
+        (self.root / "bundled/llama-server").chmod(0o755)
+        shim = self.root / "shim"
+        shim.mkdir()
+        for name, script in {"uname": "echo aarch64", "apk": "exit 1"}.items():
+            (shim / name).write_text("#!/bin/sh\n" + script + "\n")
+            (shim / name).chmod(0o755)
+        self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
+        self.assertEqual("engine_dependencies_failed", self.run_engine("provision", success=False)["error"])
+        self.assertEqual("existing incompatible engine", (self.root / "bin/llama-server").read_text())
+
     def test_health_checked_server_status_and_stop(self):
         self.assertTrue(self.run_engine("serve", "test.gguf", "--port", str(self.port))["ready"])
         state = self.run_engine("status")

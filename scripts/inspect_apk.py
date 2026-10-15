@@ -47,7 +47,7 @@ def main():
     (args.output / 'apk-signature.txt').write_text(signing)
     package = re.search(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging)
     assert package, 'Cannot read APK package identity'
-    assert package.groups() == ('com.openmine', '5', '0.3.0-dev'), 'Unexpected package or upgrade version'
+    assert package.groups() == ('com.openmine', '11', '0.4.1-dev'), 'Unexpected package or upgrade version'
     cert = re.search(r'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)', signing)
     assert cert, 'Cannot read APK signer certificate'
     test_apk = args.apk.parent.parent / 'androidTest/debug/app-debug-androidTest.apk'
@@ -77,10 +77,10 @@ def main():
         'target_sdk': re.search(r"targetSdkVersion:'([^']+)'", badging).group(1),
         'packaged_abis': abi_list, 'native_libraries': native,
         'packaged_shell_sha256': hashlib.sha256(shell).hexdigest(),
-        'upgrade_compatibility': 'A new signing identity was explicitly authorized. Existing differently signed installations cannot be updated with this APK. Preserve user data; do not uninstall or clear it automatically.',
+        'upgrade_compatibility': 'Built with this workspace debug key. Original installation signing key was unavailable. Compare the installed signer before updating; preserve user data and do not uninstall or clear it.',
         'abi_runtime_coverage': 'See Android test artifacts. Packaging an ABI does not prove it runs.',
         'inference_status': 'UNVERIFIED unless separate actual GGUF/Ollama runtime evidence establishes it; no fixture result is inference evidence.',
-        'distribution': 'Development APK only. New signing-key backup is encrypted in signing-backup.cms; retain the matching recovered key for future updates.',
+        'distribution': 'Development APK only. No release publication or signing-key backup is claimed.',
     }
     (args.output / 'apk-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     (args.output / 'app-debug.apk.sha256').write_text(f'{checksum}  app-debug.apk\n')

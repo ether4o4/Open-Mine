@@ -20,8 +20,10 @@ class OpenMineRuntime private constructor(private val context:Context) {
     private val rootfs=File(base,"rootfs")
     private val tmp=File(base,"tmp").apply{mkdirs()}
     private val marker=File(base,"ready")
+    private val engineMarker=File(base,"engine-ready")
+    private val initialInstallation=RuntimeInstallation.inspect(base)
     private val downloader=RootfsDownloader()
-    private val _status=MutableStateFlow(if(marker.exists())"Linux shell installed" else "Linux shell needs setup")
+    private val _status=MutableStateFlow(if(initialInstallation.shellInstalled)"Linux shell installed" else "Linux shell needs setup")
     val status:StateFlow<String> = _status
     val busy=MutableStateFlow(false)
     private val transcript=File(base,"terminal-transcript.txt")
@@ -33,15 +35,48 @@ class OpenMineRuntime private constructor(private val context:Context) {
     private var handle:ProotHandle?=null
     private var modelServerHandle:ProotHandle?=null
     val shellHealthy=MutableStateFlow(false)
+    val shellInstalled=MutableStateFlow(initialInstallation.shellInstalled)
+    val engineInstalled=MutableStateFlow(initialInstallation.engineInstalled)
+    val engineHealthy=MutableStateFlow(false)
     val modelHealthy=MutableStateFlow(false)
     val ready get()=shellHealthy.value
-    private val installed get()=marker.exists() && File(rootfs,"bin/bash").isFile && File(rootfs,"bin/busybox").isFile
+    private val shellFilesPresent get()=File(rootfs,"bin/bash").isFile && File(rootfs,"bin/busybox").isFile
+    private val engineFile get()=File(home,".morsvitaest/llm/bin/llama-server")
     private val modelDir get()=File(home,".morsvitaest/llm/models").apply{mkdirs()}
     init{
         refreshModels()
-        if(installed) verifyShell() else _status.value="Linux shell needs setup or repair"
+        if(shellFilesPresent) verifyShell() else _status.value="Linux shell needs setup or repair"
     }
-    fun verifyShell()=run("Checking Linux shell"){probeShell();_status.value="Linux shell execution verified"}
+    private fun refreshInstallation(){
+        val installation=RuntimeInstallation.inspect(base)
+        shellInstalled.value=installation.shellInstalled
+        engineInstalled.value=installation.engineInstalled
+    }
+    fun verifyShell()=run("Checking Linux shell"){
+        engineHealthy.value=false
+        modelHealthy.value=false
+        probeShell()
+        marker.writeText("ready")
+        refreshInstallation()
+        _status.value="Shell installed successfully · execution check passed"
+        // Reconcile older installations without turning a remembered install into
+        // a fake live status. Each executable and model status is checked afresh.
+        if(engineFile.isFile){
+            val result=runInterruptible(Dispatchers.IO){executor().execute("/root/.morsvitaest/llm/bin/llama-server --version",10)}
+            if(result["success"]==true){
+                engineHealthy.value=true
+                engineMarker.writeText("execution verified")
+                refreshEngineScript()
+                val model=runInterruptible(Dispatchers.IO){executor().execute("bash /root/morsllm.sh status",10)}
+                val json=model["stdout"]?.toString()?.lines()?.lastOrNull{it.trim().startsWith("{")}
+                modelHealthy.value=model["success"]==true && runCatching{JSONObject(json.orEmpty()).optBoolean("ready")}.getOrDefault(false)
+            }else{
+                _status.value="Shell ready · engine execution check failed. Use Check / repair engine."
+                output.value=TerminalResultFormatter.format(result)
+            }
+            refreshInstallation()
+        }
+    }
     private suspend fun probeShell(){
         shellHealthy.value=false
         val result=runInterruptible(Dispatchers.IO){executor().execute("bash --noprofile --norc -c 'printf OPENMINE_SHELL_OK'",10)}
@@ -55,7 +90,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
     @Synchronized private fun run(label:String,action:suspend ()->Unit){
         if(busy.value)return
         busy.value=true;_status.value=label;if(label!="Running command") output.value=""
-        job=scope.launch{try{action()}catch(e:CancellationException){_status.value="Cancelled"}catch(e:Exception){_status.value="Failed: ${e.message}"}finally{handle=null;busy.value=false}}
+        job=scope.launch{try{action()}catch(e:CancellationException){_status.value="Cancelled"}catch(e:Exception){_status.value="Failed: ${e.message}"}finally{refreshInstallation();handle=null;busy.value=false}}
     }
     fun cancel(){job?.cancel();downloader.cancel();session.cancelForeground();handle?.cancel()}
     fun setup()=run("Setting up Linux shell"){
@@ -91,7 +126,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         downloader.writeResolvConf(rootfs)
         downloader.writeRepositories(rootfs,downloader.mirrors.first())
         _status.value="Installing shell and engine prerequisites"
-        val running=executor().executeStreaming("apk add --no-cache bash curl jq git",onStdout={line->output.value=(output.value+"\n"+line).takeLast(20000)},onStderr={line->output.value=(output.value+"\n"+line).takeLast(20000)})
+        val running=executor().executeStreaming("apk add --no-cache bash curl jq git libstdc++ libgcc",onStdout={line->output.value=(output.value+"\n"+line).takeLast(20000)},onStderr={line->output.value=(output.value+"\n"+line).takeLast(20000)})
         handle=running
         val exit=try { withTimeout(180000) { runInterruptible(Dispatchers.IO) { running.awaitExit() } } }
             finally { if (!currentCoroutineContext().isActive) running.cancel() }
@@ -99,7 +134,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         refreshEngineScript()
         probeShell()
         marker.writeText("ready")
-        _status.value="Linux shell execution verified"
+        _status.value="Shell installed successfully · execution check passed"
     }
     fun command(command:String)=run("Running command"){
         check(ready){"Set up Linux shell first."}
@@ -113,7 +148,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
             output.value=terminalOutput.value
             throw e
         }
-        output.value=(history+result.toString()).takeLast(20000)
+        output.value=(history+TerminalResultFormatter.format(result)).takeLast(20000)
         terminalOutput.value=output.value
         transcript.writeText(output.value)
         if(result["shell_died"]!=true) File(base,"terminal-cwd.txt").writeText(result["cwd"].toString())
@@ -129,7 +164,22 @@ class OpenMineRuntime private constructor(private val context:Context) {
         check(ready){"Set up Linux shell first."}
         check(action in setOf("provision","serve","stop","status")){"Unsupported engine action"}
         check(action!="provision" || BuildConfig.DEBUG){"Engine downloads are disabled in release builds."}
+        if(action=="provision")engineHealthy.value=false
         refreshEngineScript()
+        if(action=="provision" && Build.SUPPORTED_ABIS.first()=="arm64-v8a") {
+            _status.value="Installing bundled ARM64 engine"
+            val operation=currentCoroutineContext()
+            BundledEngine.install(context.assets.open("sandbox/llama-server-aarch64-musl"),
+                File(home,".morsvitaest/llm/bundled/llama-server")) { operation.ensureActive() }
+        }
+        if(action=="serve") {
+            val weights=File(modelDir,model)
+            require(weights.canonicalFile.parentFile==modelDir.canonicalFile && weights.isFile){"Select an imported model"}
+            val info=com.openmine.GgufMetadata.inspect(weights)
+            val memory=android.app.ActivityManager.MemoryInfo()
+            (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(memory)
+            check(!memory.lowMemory && info.estimatedMemory<memory.availMem-memory.threshold){"Insufficient available memory. This model needs approximately ${info.estimatedMemory/(1024*1024)} MiB plus Android's reserve. Choose smaller weights or close other apps."}
+        }
         val argument=if(action=="serve")" '${model.replace("'","'\\''")}'" else ""
         var tail=""
         val serving=CompletableDeferred<JSONObject>()
@@ -175,6 +225,10 @@ class OpenMineRuntime private constructor(private val context:Context) {
         }
         if(action=="stop"){modelServerHandle?.cancel();modelServerHandle=null;modelHealthy.value=false}
         if(action=="status")modelHealthy.value=parsed?.optBoolean("ready")==true
+        if(action=="provision"){
+            engineHealthy.value=true
+            engineMarker.writeText("execution verified")
+        }
         _status.value=when(action){
             "serve"->"Model health check passed; AI Chat can use http://127.0.0.1:8080/v1"
             "status"->if(modelHealthy.value)"Model HTTP health check passed" else if(parsed?.optBoolean("running")==true)"Model process exists but is not healthy" else "Model is stopped"
@@ -200,13 +254,19 @@ class OpenMineRuntime private constructor(private val context:Context) {
                 while(true){currentCoroutineContext().ensureActive();val count=input.read(buffer);if(count<0)break;total+=count;check(total<=8L*1024*1024*1024){"Model exceeds 8 GiB limit"};check(base.usableSpace>count+16L*1024*1024){"Not enough free storage"};out.write(buffer,0,count);_status.value="Imported ${total/(1024*1024)} MiB"}
                 out.fd.sync()
             }} ?: error("Cannot open model file")
-            check(partial.length()>32){"Truncated GGUF file"}
+            val info=com.openmine.GgufMetadata.inspect(partial)
             currentCoroutineContext().ensureActive()
             val imported=com.openmine.ModelImportName.publish(partial,modelDir,displayName)
-            refreshModels();_status.value="Imported ${imported.name}. Start it to verify model architecture and memory requirements."
+            refreshModels();_status.value="Imported ${imported.name}: ${info.architecture}, ${info.tensors} tensors. Inference has not been tested."
         }finally{partial.delete()}
     }
     private fun refreshModels(){models.value=modelDir.listFiles()?.filter{it.extension=="gguf"}?.map{it.name}?.sorted().orEmpty()}
+    fun deleteModel(name:String)=run("Deleting selected weights") {
+        check(!modelHealthy.value){"Stop the model before deleting weights"}
+        val file=File(modelDir,name)
+        require(file.canonicalFile.parentFile==modelDir.canonicalFile && file.extension=="gguf"){"Invalid model path"}
+        check(file.delete()){"Could not delete weights"};refreshModels();_status.value="Deleted $name; the original phone file is unchanged"
+    }
     companion object{
         @Volatile private var instance:OpenMineRuntime?=null
         fun get(c:Context)=instance ?: synchronized(this){instance ?: OpenMineRuntime(c.applicationContext).also{instance=it}}

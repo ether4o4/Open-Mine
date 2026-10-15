@@ -71,6 +71,36 @@ class PersistentSandboxShellTest {
         assertEquals("recovered", shell.run("printf recovered", 3)["stdout"])
     }
 
+    @Test fun cancellingStopsLaterStatementsAndGrandchildrenButNotOtherJobs() = withShell { shell, directory ->
+        val unrelated = ProcessBuilder("/bin/bash", "-c", "sleep 20").start()
+        val ready = CompletableDeferred<Unit>()
+        shell.run("export OPENMINE_KEEP='café 日本語'; mkdir -p kept; cd kept", 3)
+        val job = CoroutineScope(currentCoroutineContext()).async {
+            shell.run("(sleep 2; touch '${directory.path}/grandchild') & printf 'ready\\n'; sleep 20; touch '${directory.path}/later'; printf forbidden", 30,
+                onStdout = { if (it == "ready") ready.complete(Unit) })
+        }
+        try {
+            ready.await()
+            shell.cancelForeground()
+            val result = job.await()
+            assertEquals(false, result["success"])
+            assertEquals(true, result["cancelled"])
+            delay(2500)
+            assertFalse(File(directory, "later").exists())
+            assertFalse(File(directory, "grandchild").exists())
+            assertFalse(result["stdout"].toString().contains("forbidden"))
+            assertTrue("Cancellation killed unrelated work", unrelated.isAlive)
+            val recovery = shell.run("printf '%s:%s' \"\$PWD\" \"\$OPENMINE_KEEP\"", 3)
+            assertEquals("${directory.path}/kept:café 日本語", recovery["stdout"])
+        } finally { unrelated.destroyForcibly() }
+    }
+
+    @Test fun timeoutPreventsLaterFilesystemSideEffects() = withShell { shell, directory ->
+        val result = shell.run("sleep 20; touch '${directory.path}/forbidden'", 1)
+        assertEquals(124, result["exit_code"])
+        assertFalse(File(directory, "forbidden").exists())
+    }
+
     @Test fun explicitExitStartsFreshSessionAndRestoresLastKnownCwd() = withShell { shell, directory ->
         shell.run("mkdir -p child; cd child", 3)
         assertEquals(true, shell.run("exit 9", 3)["shell_died"])

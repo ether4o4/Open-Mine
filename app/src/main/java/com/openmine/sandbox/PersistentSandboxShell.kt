@@ -12,7 +12,7 @@ private const val RS = "\u001e"
 private const val US = "\u001f"
 private const val PID_PROBE_PREFIX = "${RS}OPENMINEPID$US"
 
-/** A persistent Bash process. This is a shell, not a security boundary for hostile commands. */
+/** Foreground Bash jobs with checkpointed cwd/exports. This is not a security boundary for hostile commands. */
 class PersistentSandboxShell(
     private val executor: ProotExecutor,
     private val tmpPath: String,
@@ -27,6 +27,9 @@ class PersistentSandboxShell(
     @Volatile private var processToken: Any? = null
     @Volatile private var lastCwd = initialCwd
     private var watchdog: Job? = null
+    private var exportedState = ""
+    private val cancelLock = Any()
+    private var pidReady = CompletableDeferred<Int>()
     private val currentSink = AtomicReference<CommandSink?>(null)
 
     private class CommandSink(
@@ -37,13 +40,16 @@ class PersistentSandboxShell(
         val stdout = StringBuilder()
         val stderr = StringBuilder()
         val done = CompletableDeferred<Result>()
+        @Volatile var cancelled = false
         var stdoutFinished = false
         var stderrResult: Result? = null
     }
 
     data class Result(val exitCode: Int, val cwd: String, val bashPid: Int, val shellDied: Boolean = false)
 
-    /** Sources commands to retain cwd/export, and drains BOTH output pipes before returning. */
+    /** Each foreground job gets its own Bash process tree. Completed cwd/exports are
+     * checkpointed in memory; cancellation cannot resume a later statement or target
+     * another submitted job. This deliberately does not support detached background jobs. */
     suspend fun run(
         command: String,
         timeoutSeconds: Long,
@@ -54,34 +60,39 @@ class PersistentSandboxShell(
         require(command.length <= 8192 && '\u0000' !in command) { "Command is too large or contains NUL" }
         val sink = CommandSink(UUID.randomUUID().toString().replace("-", ""), onStdout, onStderr)
         val cmdFile = File(tmpPath, ".openmine_cmd_${sink.nonce}")
+        val stateFile = File(tmpPath, ".openmine_env_${sink.nonce}")
         try {
             ensureShell()
+            withTimeout(5000) { pidReady.await() }
             currentSink.set(sink)
             cmdFile.writeText(command)
+            stateFile.writeText(exportedState)
+            val statePath = quote("$guestTmpPath/${stateFile.name}")
             val path = quote("$guestTmpPath/${cmdFile.name}")
             // Dedicated descriptors survive ordinary `exec >file` / `exec 2>file` redirects.
             // Both pipes need a barrier: a stderr marker alone can race stdout delivery,
             // and a command like `printf hello` otherwise never releases readLine().
-            val line = ". $path; __openmine_status=\$?; command rm -f $path; " +
+            val line = ". $statePath; . $path; __openmine_status=\$?; command rm -f $path; builtin export -p > $statePath; " +
                 "builtin printf '\\n\\036%s\\036\\n' '${sink.nonce}' >&19; " +
                 "builtin printf '\\n\\036%s\\037%d\\037%d\\037%s\\036\\n' '${sink.nonce}' \"\$__openmine_status\" \"\$\$\" \"\$PWD\" >&20"
             check(handle?.writeInput(line) == true) { "Shell input closed; retry the command" }
             val result = withTimeoutOrNull(timeoutSeconds.coerceIn(1, 1800) * 1000) { sink.done.await() }
             if (result == null) {
-                cancelForeground()
+                cancelAndAwait()
                 val recovered = withTimeoutOrNull(2000) { sink.done.await() }
                 if (recovered == null) reset()
                 return@withLock buildResult(sink, recovered ?: Result(-1, lastCwd, 0, true), timedOut = true)
             }
-            if (!result.shellDied) { lastCwd = result.cwd; bashPid = result.bashPid }
+            if (!result.shellDied && !sink.cancelled) {
+                lastCwd = result.cwd
+                exportedState = stateFile.readText()
+            }
             buildResult(sink, result)
         } catch (e: CancellationException) {
             // A cancelled caller must not release the mutex while its command keeps
             // running; otherwise a subsequent command inherits the old output/process.
             withContext(NonCancellable) {
-                cancelForeground()
-                withTimeoutOrNull(1500) { sink.done.await() }
-                reset()
+                cancelAndAwait()
             }
             throw e
         } catch (e: Exception) {
@@ -89,26 +100,48 @@ class PersistentSandboxShell(
             synchronized(sink) { appendBounded(sink.stderr, e.message ?: "Shell command failed") }
             buildResult(sink, Result(-1, lastCwd, 0, true))
         } finally {
+            // Stop only this job's descendants before releasing the command mutex.
+            withContext(NonCancellable) { terminateJob(sink) }
             currentSink.compareAndSet(sink, null)
+            reset()
             cmdFile.delete()
+            stateFile.delete()
         }
     }
 
     fun writeInput(line: String) { handle?.writeInput(line) }
 
-    /** Escalation belongs only to the command that was active when Cancel was pressed. */
+    /** Never signal just a child: Bash would continue with the next statement. */
     fun cancelForeground() {
         val sink = currentSink.get() ?: return
-        val activeHandle = handle
-        val pid = bashPid
-        if (pid == null) { reset(); return }
-        scope.launch {
-            for (signal in listOf("INT", "TERM", "KILL")) {
-                if (currentSink.get() !== sink || sink.done.isCompleted || handle !== activeHandle) return@launch
-                runCatching { executor.execute("kids=\$(pgrep -P $pid); [ -z \"\$kids\" ] || kill -$signal \$kids", 2) }
-                delay(300)
+        sink.cancelled = true
+        scope.launch { terminateJob(sink) }
+    }
+
+    private suspend fun cancelAndAwait() {
+        val sink = currentSink.get() ?: return
+        sink.cancelled = true
+        terminateJob(sink)
+    }
+
+    private suspend fun terminateJob(sink: CommandSink) = withContext(Dispatchers.IO) {
+        synchronized(cancelLock) {
+            if (currentSink.get() !== sink) return@synchronized
+            val pid = bashPid
+            if (pid != null) {
+                // Freeze each ancestor BEFORE discovering its children. No frozen parent
+                // can fork or execute the statement after its child is killed. This tree
+                // belongs to one job, never the engine or a different terminal session.
+                executor.execute("""
+                    freeze_tree() {
+                        kill -STOP "${'$'}1" 2>/dev/null || return
+                        for child in ${'$'}(pgrep -P "${'$'}1"); do freeze_tree "${'$'}child"; done
+                        kill -KILL "${'$'}1" 2>/dev/null || true
+                    }
+                    freeze_tree $pid
+                """.trimIndent(), 5)
             }
-            if (currentSink.get() === sink && !sink.done.isCompleted && handle === activeHandle) reset()
+            reset()
         }
     }
 
@@ -127,6 +160,7 @@ class PersistentSandboxShell(
     private fun ensureShell() = synchronized(stateLock) {
         if (handle != null) return@synchronized
         val token = Any()
+        pidReady = CompletableDeferred()
         processToken = token
         val h = executor.executeStreaming(
             command = "exec bash --noprofile --norc",
@@ -152,7 +186,7 @@ class PersistentSandboxShell(
     private fun dispatch(line: String, stderr: Boolean, token: Any) {
         if (processToken !== token) return
         if (stderr && line.startsWith(PID_PROBE_PREFIX) && line.endsWith(RS)) {
-            line.substring(PID_PROBE_PREFIX.length, line.length - 1).toIntOrNull()?.let { bashPid = it }
+            line.substring(PID_PROBE_PREFIX.length, line.length - 1).toIntOrNull()?.let { bashPid = it; pidReady.complete(it) }
             return
         }
         val sink = currentSink.get() ?: return
@@ -173,10 +207,11 @@ class PersistentSandboxShell(
 
     private fun buildResult(sink: CommandSink, result: Result, timedOut: Boolean = false): Map<String, Any> = synchronized(sink) {
         mapOf(
-            "success" to (!timedOut && !result.shellDied && result.exitCode == 0),
+            "success" to (!sink.cancelled && !timedOut && !result.shellDied && result.exitCode == 0),
+            "cancelled" to sink.cancelled,
             "stdout" to sink.stdout.toString(),
-            "stderr" to (sink.stderr.toString() + if (timedOut) "\nCommand timed out" else if (result.shellDied) "\nShell session ended; the next command starts a new session" else "").take(MAX_OUTPUT_LENGTH),
-            "exit_code" to if (timedOut) 124 else result.exitCode,
+            "stderr" to (sink.stderr.toString() + if (timedOut) "\nCommand timed out" else if (sink.cancelled) "\nCommand cancelled; completed cwd and exported environment retained" else if (result.shellDied) "\nShell session ended; the next command starts a new session" else "").take(MAX_OUTPUT_LENGTH),
+            "exit_code" to if (timedOut) 124 else if (sink.cancelled) 130 else result.exitCode,
             "timed_out" to timedOut,
             "cwd" to result.cwd,
             "shell_died" to result.shellDied,

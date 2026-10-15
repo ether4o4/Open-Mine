@@ -5,6 +5,10 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.view.WindowManager
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -107,6 +111,63 @@ class ProjectRuntimeTest {
         compose.waitUntil(10_000) { store.listFiles().any { it.name == "recovered-copy.txt" } }
         assertEquals("My conflicting draft", store.readText("recovered-copy.txt"))
         assertEquals("External change preserved", store.readText("notes.txt"))
+    }
+
+    @Test fun switchingTabsImmediatelyAfterTypingPreservesLatestDraft() {
+        store.createText("notes.txt", "Original file remains intact")
+        val projectVisible = mutableStateOf(true)
+        compose.setContent {
+            MaterialTheme {
+                if (projectVisible.value) ProjectWorkspace(record) {} else Text("Another tab")
+            }
+        }
+        awaitText("Files (1)")
+        compose.onNodeWithText("Files (1)").performClick()
+        compose.onNodeWithText("View / edit text").performClick()
+        awaitEnabled("File contents")
+        val edit = compose.onNodeWithText("File contents").fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+        // Perform the final input and unmount in one UI turn. The 250 ms debounce cannot
+        // preserve this edit first; navigation disposal must flush the synchronous checkpoint.
+        compose.runOnUiThread {
+            assertTrue(edit(AnnotatedString("Last edit before leaving — Ω")))
+            projectVisible.value = false
+        }
+        awaitText("Another tab")
+        compose.waitUntil(10_000) { store.readDraft("notes.txt")?.text == "Last edit before leaving — Ω" }
+        assertEquals("Original file remains intact", store.readText("notes.txt"))
+
+        // A later visit recovers the exact draft through the normal project editor path.
+        compose.runOnUiThread { projectVisible.value = true }
+        awaitText("• Files (1)")
+        compose.onNodeWithText("View / edit text").performClick()
+        awaitText("Recovered the unsaved local draft")
+        compose.onNodeWithText("Last edit before leaving — Ω").assertIsDisplayed()
+        awaitEnabled("Save")
+        compose.onNodeWithText("Save").performClick()
+        compose.waitUntil(10_000) { store.readText("notes.txt") == "Last edit before leaving — Ω" }
+        awaitText("Saved notes.txt")
+        compose.runOnUiThread { projectVisible.value = false }
+        awaitText("Another tab")
+        compose.runOnUiThread { projectVisible.value = true }
+        awaitText("• Files (1)")
+        compose.onNodeWithText("View / edit text").performClick()
+        awaitText("UTF-8 text editor · drafts saved locally")
+        assertNull("Disposal after Save must not recreate the committed draft", store.readDraft("notes.txt"))
+
+        compose.onNodeWithText("File contents").performTextReplacement("This edit is deliberately discarded")
+        awaitEnabled("Discard draft")
+        compose.onNodeWithText("Discard draft").performClick()
+        awaitText("Confirm deletion")
+        compose.onNodeWithText("Delete").performClick()
+        awaitText("Restored saved file")
+        compose.runOnUiThread { projectVisible.value = false }
+        awaitText("Another tab")
+        compose.runOnUiThread { projectVisible.value = true }
+        awaitText("• Files (1)")
+        compose.onNodeWithText("View / edit text").performClick()
+        awaitText("UTF-8 text editor · drafts saved locally")
+        assertNull("Disposal after Discard must not recreate the rejected draft", store.readDraft("notes.txt"))
+        assertEquals("Last edit before leaving — Ω", store.readText("notes.txt"))
     }
 
     @Test fun androidFileIoRejectsTraversalAndRecoversFromAnInterruptedSource() {

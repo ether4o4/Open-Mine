@@ -31,7 +31,7 @@ class GgufInferenceTest {
     fun productionRuntimeImportsServesStreamsCancelsAndStopsARealGguf() {
         val args = InstrumentationRegistry.getArguments()
         check(args.getString("openMineRealGguf") == "true") {
-            "Run GgufInferenceTest only in its explicit native-inference CI phase, after NativeRuntimeTest."
+            "Run GgufInferenceTest only in its explicit native-inference CI phase, independently from NativeRuntimeTest."
         }
         val target = InstrumentationRegistry.getInstrumentation().targetContext
         val directory = File(checkNotNull(target.getExternalFilesDir(null)), "verification").apply { mkdirs() }
@@ -52,7 +52,8 @@ class GgufInferenceTest {
         var serverMayBeRunning = false
         try {
             awaitRuntime(runtime, "initial shell verification", 30_000)
-            check(runtime.ready) { "Native shell is not verified. Run NativeRuntimeTest setup first. ${runtime.status.value}" }
+            if(!runtime.ready) { runtime.setup(); awaitRuntime(runtime,"independent GGUF shell setup",600_000) }
+            check(runtime.ready) { "Independent GGUF setup failed: ${runtime.status.value}" }
 
             val input = File(checkNotNull(args.getString("openMineGgufPath")) { "CI must provide a real, downloaded GGUF model path." }).canonicalFile
             val expectedHash = checkNotNull(args.getString("openMineGgufSha256")) { "CI must provide the GGUF SHA-256." }.lowercase()
@@ -108,7 +109,21 @@ class GgufInferenceTest {
                 .put("ownedServer", serverMetadata).put("elapsedMillis", SystemClock.elapsedRealtime() - serveStarted))
             checkpoint(evidenceFile, evidence)
 
-            withIsolatedLibrary(target) { library -> verifyStreamingAndCancellation(library, evidence) }
+            // Disable all emulator network transports after setup. Loopback inference
+            // must remain usable without a provider, host bridge, or downloaded response.
+            val instrumentation=InstrumentationRegistry.getInstrumentation()
+            fun shell(command:String)=instrumentation.uiAutomation.executeShellCommand(command).use{fd->android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().readText()}
+            val wifi=shell("settings get global wifi_on").trim()
+            val data=shell("settings get global mobile_data").trim()
+            try {
+                shell("svc wifi disable");shell("svc data disable")
+                val connectivity=target.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val deadline=SystemClock.elapsedRealtime()+10_000
+                while(connectivity.activeNetwork!=null && SystemClock.elapsedRealtime()<deadline)Thread.sleep(100)
+                assertTrue("Offline inference requires no active external network",connectivity.activeNetwork==null)
+                evidence.put("externalNetworkDisabled",true)
+                withIsolatedLibrary(target) { library -> verifyStreamingAndCancellation(library, evidence) }
+            }finally{if(wifi=="1")shell("svc wifi enable");if(data=="1")shell("svc data enable")}
             checkpoint(evidenceFile, evidence)
 
             runtime.engine("stop")
