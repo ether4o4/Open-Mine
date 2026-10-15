@@ -21,8 +21,8 @@ android {
         applicationId = "com.openmine"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.4.1-dev"
+        versionCode = 12
+        versionName = "0.4.2-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }

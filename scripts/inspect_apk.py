@@ -47,7 +47,7 @@ def main():
     (args.output / 'apk-signature.txt').write_text(signing)
     package = re.search(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging)
     assert package, 'Cannot read APK package identity'
-    assert package.groups() == ('com.openmine', '11', '0.4.1-dev'), 'Unexpected package or upgrade version'
+    assert package.groups() == ('com.openmine', '12', '0.4.2-dev'), 'Unexpected package or upgrade version'
     cert = re.search(r'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)', signing)
     assert cert, 'Cannot read APK signer certificate'
     test_apk = args.apk.parent.parent / 'androidTest/debug/app-debug-androidTest.apk'
