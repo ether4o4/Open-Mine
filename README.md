@@ -17,11 +17,29 @@ signing key. The package remains `com.openmine`.
 
 | Current source | Details |
 | --- | --- |
-| Version | `0.4.2-dev` · version code `12` |
+| Version | `0.5.0-dev` · version code `13` (source); latest published APK is 0.4.2-dev |
 | Updated | 2026-10-15 |
 | Package | `com.openmine` |
 | Baseline | Verified 0.4.1 source bundle, original commit `21a33b8451241494d7b6c4f6a1d2296315f2bd8d` |
 | Changes | PR #3 model fixes and 6% text increase, persistent runtime, Termux controls, panel heights, shell history and Hugging Face import entry point |
+
+## New in 0.5.0-dev (source)
+
+- **Setup Assistant** in Diagnostics: real checks of runtime, engine, models, chat endpoint,
+  storage, memory, library and notifications, each with a user-started repair.
+- **Model file doctor**: pick a file through Android's picker and learn exactly why it will
+  not import (access, location, unfinished/split download, web page/LFS/safetensors instead
+  of GGUF, unsupported architecture, storage or memory), then import it after review.
+- **Operation center**: persistent record of setup, model and terminal operations, with
+  interrupted-operation detection and fixed-parameter retry.
+- **Model capability profiles and routing** for small specialists, general and remote models
+  through the one OpenAI-compatible interface. Candidates (BotPsy, Needle 3, LFM, Gemma 4,
+  Nanbeige, Qwen) are listed as unverified; none are bundled.
+- Importer now accepts `lfm2`/`lfm2moe`/`smollm3`/`granite` GGUFs that the bundled engine
+  implements. A reviewed read-only `setup_diagnostics` assistant tool.
+
+Details: [Setup Assistant](docs/SETUP_ASSISTANT.md). The download link above is still the
+0.4.2-dev release until a 0.5.0-dev APK is published from CI.
 
 ## What's included
 

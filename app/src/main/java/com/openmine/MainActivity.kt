@@ -171,7 +171,7 @@ class MainActivity : ComponentActivity() {
                                 when (destination) {
                                     8 -> BrowserScreen(onExit = { navigate(3) })
                                     9 -> OperationalRuntimeScreen(context, terminalOnly = true)
-                                    10 -> DiagnosticsScreen(context)
+                                    10 -> DiagnosticsScreen(context, onOpenModels = { route("runtime") }, onOpenChat = { navigate(12) })
                                     11 -> SettingsScreen(animations, { animations = it; preferences.edit().putBoolean("animations", it).apply() },
                                         haptics, { haptics = it; preferences.edit().putBoolean("haptics", it).apply() })
                                     12 -> OperationalAssistantScreen(context, onOpenModels = { route("runtime") })
@@ -193,7 +193,7 @@ private fun recordType(screen: Int): String? = when (screen) {
     4 -> "SKILL"; 5 -> "MISSION"; 6 -> "TOOL"; 7 -> "FILE"; else -> null
 }
 
-@Composable private fun DiagnosticsScreen(context: Context) {
+@Composable private fun DiagnosticsScreen(context: Context, onOpenModels: () -> Unit, onOpenChat: () -> Unit) {
     val runtime = remember { OpenMineRuntime.get(context) }
     val healthy by runtime.shellHealthy.collectAsState()
     val model by runtime.modelHealthy.collectAsState()
@@ -228,6 +228,8 @@ private fun recordType(screen: Int): String? = when (screen) {
             finally { refreshing = false }
         } }, enabled = !refreshing) { Text(if (refreshing) "Rebuilding index…" else "Rebuild knowledge index") }
         TextButton({ refresh++ }) { Text("Refresh diagnostics") }
+        HorizontalDivider()
+        SetupAssistantPanel(context, onOpenModels, onOpenChat)
     }
 }
 

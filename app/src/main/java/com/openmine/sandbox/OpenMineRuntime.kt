@@ -113,7 +113,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         shellInstalled.value=installation.shellInstalled
         engineInstalled.value=installation.engineInstalled
     }
-    fun verifyShell()=run("Checking Linux shell"){
+    fun verifyShell()=run("Checking Linux shell","Linux shell",com.openmine.RetryAction.VERIFY_SHELL){
         engineHealthy.value=false
         modelHealthy.value=false
         probeShell()
@@ -148,14 +148,17 @@ class OpenMineRuntime private constructor(private val context:Context) {
     }
     private fun refreshEngineScript(){context.assets.open("sandbox/morsllm.sh").use{ShellScriptInstaller.install(File(home,"morsllm.sh"),it.readBytes())}}
     private fun executor()=ProotExecutor(File(context.applicationInfo.nativeLibraryDir,"libproot.so").absolutePath,base.absolutePath,rootfs.absolutePath,home.absolutePath,tmp.absolutePath)
-    @Synchronized private fun <T> launchOperation(label:String,action:suspend ()->T):Deferred<T>? {
+    val journal get()=com.openmine.OperationJournal.get(context.filesDir)
+    @Synchronized private fun <T> launchOperation(label:String,component:String="Runtime",retry:com.openmine.RetryAction?=null,argument:String="",action:suspend ()->T):Deferred<T>? {
         if(busy.value)return null
         busy.value=true;_status.value=label;if(label!="Running command") output.value=""
+        val record=runCatching{journal.begin(component,label,retry,argument)}.getOrNull()
+        fun close(state:com.openmine.OperationState,detail:String){record?.let{id->runCatching{journal.finish(id,state,detail)}}}
         val operation=scope.async(start=CoroutineStart.LAZY) {
             val ownJob=currentCoroutineContext()[Job]
-            try { RuntimeService.ensureStarted(context); action() }
-            catch(e:CancellationException){_status.value="Cancelled";throw e}
-            catch(e:Exception){_status.value="Failed: ${e.message}";throw e}
+            try { RuntimeService.ensureStarted(context); action().also{close(com.openmine.OperationState.SUCCEEDED,_status.value)} }
+            catch(e:CancellationException){_status.value="Cancelled";close(com.openmine.OperationState.CANCELLED,"Cancelled by request");throw e}
+            catch(e:Exception){_status.value="Failed: ${e.message}";close(com.openmine.OperationState.FAILED,e.message ?: e.javaClass.simpleName);throw e}
             finally{synchronized(this@OpenMineRuntime){
                 if(job===ownJob){refreshInstallation();handle=null;busy.value=false}
             }}
@@ -164,9 +167,22 @@ class OpenMineRuntime private constructor(private val context:Context) {
         operation.start()
         return operation
     }
-    private fun run(label:String,action:suspend ()->Unit){ launchOperation(label,action) }
+    private fun run(label:String,component:String="Runtime",retry:com.openmine.RetryAction?=null,argument:String="",action:suspend ()->Unit){ launchOperation(label,component,retry,argument,action) }
+    /** Re-runs a recorded operation with the same safe, fixed parameters. Imports need a fresh picker grant. */
+    fun retry(record:com.openmine.OperationRecord):Boolean {
+        if(busy.value)return false
+        when(record.retry){
+            com.openmine.RetryAction.VERIFY_SHELL->verifyShell()
+            com.openmine.RetryAction.SETUP_SHELL->setup()
+            com.openmine.RetryAction.PROVISION_ENGINE->engine("provision")
+            com.openmine.RetryAction.ENGINE_STATUS->engine("status")
+            com.openmine.RetryAction.SERVE_MODEL->{ if(record.argument !in models.value)return false;engine("serve",record.argument) }
+            else->return false
+        }
+        return true
+    }
     @Synchronized fun cancel(){if(stopping)return;job?.cancel();downloader.cancel();session.cancelForeground();handle?.cancel()}
-    fun setup()=run("Setting up Linux shell"){
+    fun setup()=run("Setting up Linux shell","Linux shell",com.openmine.RetryAction.SETUP_SHELL){
         check(BuildConfig.DEBUG){"Runtime downloads are disabled in release builds pending Play-compatible packaging."}
         check(File(context.applicationInfo.nativeLibraryDir,"libproot.so").canExecute()){"No executable PRoot binary for this device ABI."}
         val arch=when(Build.SUPPORTED_ABIS.first()){ "arm64-v8a"->"aarch64";"x86_64"->"x86_64";"armeabi-v7a"->"armhf";else->error("Unsupported device ABI")}
@@ -209,7 +225,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         marker.writeText("ready")
         _status.value="Shell installed successfully · execution check passed"
     }
-    fun command(command:String):Boolean = launchOperation("Running command"){ executeCommand(command,30) } != null
+    fun command(command:String):Boolean = launchOperation("Running command","Terminal"){ executeCommand(command,30) } != null
     private suspend fun executeCommand(command:String,timeoutSeconds:Long):Map<String,Any>{
         check(ready){"Set up Linux shell first."}
         val history=(terminalOutput.value+"\n$ "+command+"\n").takeLast(20000)
@@ -235,7 +251,8 @@ class OpenMineRuntime private constructor(private val context:Context) {
         check(result["success"]==true){"System information command failed: ${result["exit_code"]}"}
         return result["stdout"].toString()
     }
-    fun engine(action:String,model:String="")=run("Engine: $action"){
+    fun engine(action:String,model:String="")=run("Engine: $action","Model engine",when(action){
+        "provision"->com.openmine.RetryAction.PROVISION_ENGINE;"serve"->com.openmine.RetryAction.SERVE_MODEL;"status"->com.openmine.RetryAction.ENGINE_STATUS;else->null},model){
         check(ready){"Set up Linux shell first."}
         check(action in setOf("provision","serve","stop","status")){"Unsupported engine action"}
         check(action!="provision" || BuildConfig.DEBUG){"Engine downloads are disabled in release builds."}
@@ -315,7 +332,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
             else->"Engine execution verified"
         }
     }
-    fun importModel(uri:Uri)=run("Importing GGUF model"){
+    fun importModel(uri:Uri)=run("Importing GGUF model","Model import",com.openmine.RetryAction.CHOOSE_MODEL_FILE){
         val displayName=runCatching{
             context.contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use{cursor->
                 val column=cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -340,7 +357,7 @@ class OpenMineRuntime private constructor(private val context:Context) {
         }finally{partial.delete()}
     }
     private fun refreshModels(){models.value=modelDir.listFiles()?.filter{it.extension=="gguf"}?.map{it.name}?.sorted().orEmpty()}
-    fun deleteModel(name:String)=run("Deleting selected weights") {
+    fun deleteModel(name:String)=run("Deleting selected weights","Model import",null,name) {
         check(!modelHealthy.value){"Stop the model before deleting weights"}
         val file=File(modelDir,name)
         require(file.canonicalFile.parentFile==modelDir.canonicalFile && file.extension=="gguf"){"Invalid model path"}
