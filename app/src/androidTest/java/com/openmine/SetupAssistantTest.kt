@@ -48,7 +48,8 @@ class SetupAssistantTest {
         compose.onNodeWithText("SETUP ASSISTANT").assertExists()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTagPrefix("finding-")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("failed · $label", substring = true).assertExists()
-        compose.onNodeWithText("fixture failure detail", substring = true).assertExists()
+        // The newest failure is shown both as the Setup Assistant's last-failure finding and in the operation center.
+        compose.onAllNodesWithText("fixture failure detail", substring = true).assertCountEquals(2)
         compose.onNodeWithTag("doctor-pasted").performTextInput("/storage/emulated/0/Download/qwen.gguf")
         compose.onNodeWithText("The file appears to be in Downloads", substring = true).assertExists()
     }
