@@ -62,9 +62,9 @@ class MainActivity : ComponentActivity() {
     val preferences = remember { context.getSharedPreferences("open_mine", Context.MODE_PRIVATE) }
     val runtime = remember { OpenMineRuntime.get(context) }
     var screen by remember { mutableIntStateOf(preferences.getInt("screen", 3).coerceIn(0, 12)) }
-    // First launch opens the built-in guide; afterwards the saved route is restored.
-    var overlay by remember { mutableStateOf(if (!preferences.getBoolean("guide_offered", false) && !preferences.contains("screen")) "guide" else preferences.getString("route", "").orEmpty()) }
-    LaunchedEffect(Unit) { preferences.edit().putBoolean("guide_offered", true).apply() }
+    var overlay by remember { mutableStateOf(preferences.getString("route", "").orEmpty()) }
+    // The approved HUD stays the first screen; until the guide is opened or dismissed, a bar offers it.
+    var guideOffer by remember { mutableStateOf(!preferences.getBoolean("guide_offered", false)) }
     var openedId by remember { mutableStateOf(preferences.getString("opened_record", "").orEmpty()) }
     var active by remember { mutableStateOf(preferences.getString("active_$screen", preferences.getString("active", "")).orEmpty()) }
     var contextIds by remember { mutableStateOf(preferences.getStringSet("context", emptySet())?.toSet().orEmpty()) }
@@ -109,6 +109,7 @@ class MainActivity : ComponentActivity() {
     }
     fun route(value: String, id: String = "") {
         focus.clearFocus()
+        if (value == "guide" && guideOffer) { guideOffer = false; preferences.edit().putBoolean("guide_offered", true).apply() }
         overlay = value; openedId = id
         preferences.edit().putString("route", value).putString("opened_record", id).apply()
     }
@@ -175,6 +176,11 @@ class MainActivity : ComponentActivity() {
                             Text(loadError.orEmpty(), Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
                             TextButton({ refresh++ }) { Text("Retry") }
                         } else if (loading && snapshot == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (guideOffer) Row(Modifier.fillMaxWidth().testTag("guide-offer").padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("New here? The built-in AI guide can set up Open Mine for you.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton({ route("guide") }, Modifier.testTag("guide-offer-open")) { Text("Start") }
+                            TextButton({ guideOffer = false; preferences.edit().putBoolean("guide_offered", true).apply() }) { Text("Later") }
+                        }
                         Box(Modifier.weight(1f)) {
                             ReferenceHud(screen, animations && systemMotion, active, contextIds, records, status,
                                 onNavigate = ::navigate, onSelect = ::select, onToggleContext = { it.record?.let(::toggle) },
