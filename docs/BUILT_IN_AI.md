@@ -58,11 +58,30 @@ Implemented natively in Kotlin:
 - Up to 6 tool rounds per answer: search, read, refine, then answer with citations. Verified with the
   real LFM3: search → read `doc.solar#1` → correct cited answer.
 
+## Optional helper model (tagging)
+
+An opt-in second slot loads a small GGUF directly through libllama (the embedded server allows one
+instance). The guide offers LiquidAI LFM2.5-230M (153 MB, pinned revision and SHA-256). It writes a
+summary and keywords for each note once, keyed by a hash of the note's content. Tags only influence
+search ranking; LFM3 always reads the original text.
+
+Measured on 30 notes and 24 questions worded differently from the notes (x86_64 host):
+
+| | Right note in search top 3 | LFM3 read the right note |
+|---|---|---|
+| Plain BM25 | 14 / 24 | 21 / 24 |
+| BM25 + helper tags | 17 / 24 | 22 / 24 |
+
+Tagging costs about 1.3–1.7 s per note, once. Letting the small model shortlist passages for LFM3 was
+also tried and did not beat BM25's own ranking, so it was not built. Because LFM3 already retries
+searches with different words, the helper's benefit is small; it stays optional.
+
 ## Verification status
 
 | Check | Result |
 |---|---|
 | Embedded server through the JNI bridge: start, tool call, 401 without key, stop, restart | Passed on x86_64 host with real LFM3 |
 | arm64 / armv7 / x86_64 native builds, 16 KB page alignment | Verified in the APK |
-| In-process server on Android (`BuiltInServerTest`) | CI native-inference job (x86_64 emulator, small GGUF) |
+| In-process server on Android (`BuiltInServerTest`) | Passed in CI native-inference job (x86_64 emulator, small GGUF) |
+| Helper slot through the JNI bridge: load, tag, emoji round trip, oversized input rejected, unload/reload | Passed on x86_64 host with real LFM2.5-230M |
 | LFM3 on a physical phone (S24 Ultra / S25) | **Not yet measured** |
