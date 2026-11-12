@@ -77,6 +77,7 @@ private val GPanel = Color(0xFF071224)
                 Spacer(Modifier.height(6.dp))
                 ModelStatus(state, agent)
                 Spacer(Modifier.height(8.dp))
+                if (state.lfmInstalled) { HelperStatus(state, agent); Spacer(Modifier.height(8.dp)) }
                 if (!state.tutorialComplete) Steps(state, shellInstalled && shellHealthy, agent) { chooseAutonomy = true }
                 else Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Approvals: ${if (state.autonomy == AutonomyMode.FULL_AUTONOMY) "full autonomy" else "ask every time"}", color = GMuted, fontSize = 13.sp, modifier = Modifier.weight(1f))
@@ -124,6 +125,23 @@ private val GPanel = Color(0xFF071224)
                     Text("Download LFM3 (${BuiltInModels.LFM3.sizeBytes / (1024 * 1024)} MiB, Wi-Fi recommended)") }
                 state.lfmServer == LocalLlmServer.State.READY -> TextButton(agent::stopLfm) { Text("Unload LFM3 to free memory") }
                 state.lfmServer != LocalLlmServer.State.STARTING -> OutlinedButton(agent::startLfm) { Text("Start LFM3") }
+            }
+        }
+    }
+}
+
+@Composable private fun HelperStatus(state: GuideState, agent: GuideAgent) {
+    Surface(color = GPanel, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().testTag("guide-helper")) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("${if (state.helperInstalled) "●" else "○"} Helper model (optional) · tags your notes so search finds them by meaning",
+                color = if (state.helperInstalled) GGreen else GMuted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            state.helperProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
+            if (state.helperNote.isNotBlank()) Text(state.helperNote, color = GMuted, fontSize = 12.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            when {
+                state.helperProgress != null -> {}
+                !state.helperInstalled -> OutlinedButton(agent::downloadHelper, modifier = Modifier.testTag("guide-download-helper")) {
+                    Text("Download helper (${BuiltInModels.HELPER.sizeBytes / (1024 * 1024)} MiB)") }
+                else -> TextButton(agent::removeHelper) { Text("Remove helper") }
             }
         }
     }

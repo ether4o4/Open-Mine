@@ -4,7 +4,8 @@ import java.util.Locale
 import kotlin.math.ln
 
 /** One source document: a library record, an ingested document or a memory note. */
-data class KnowledgeDoc(val id: String, val title: String, val namespace: String, val text: String)
+/** [tags] are search words written by the helper model: indexed for matching, never returned as content. */
+data class KnowledgeDoc(val id: String, val title: String, val namespace: String, val text: String, val tags: String = "")
 
 data class KnowledgeHit(val id: String, val docId: String, val title: String, val namespace: String, val score: Double, val preview: String)
 
@@ -23,7 +24,7 @@ class KnowledgeIndex(docs: List<KnowledgeDoc>) {
 
     init {
         passages = docs.flatMap { doc -> split(doc.text).mapIndexed { n, chunk ->
-            val tokens = tokenize(doc.title + " " + chunk)
+            val tokens = tokenize(doc.title + " " + doc.tags + " " + chunk)
             Passage("${doc.id}#$n", doc, chunk, tokens.groupingBy { it }.eachCount(), tokens.size)
         } }
         passages.forEach { p -> p.terms.keys.forEach { documentFrequency.merge(it, 1, Int::plus) } }

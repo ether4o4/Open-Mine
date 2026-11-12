@@ -12,4 +12,11 @@ object NativeAi {
     @JvmStatic external fun serverStop()
     @JvmStatic external fun serverRunning(): Boolean
 
+
+    /** Helper slot: a small GGUF loaded directly for short background jobs (tagging). */
+    @JvmStatic external fun helperLoad(path: String, threads: Int, context: Int): String?
+    @JvmStatic external fun helperUnload()
+    @JvmStatic external fun helperLoaded(): Boolean
+    /** UTF-8 in and out (JNI's modified UTF-8 mangles emoji). Returns the reply, or "ERROR: ...". */
+    @JvmStatic external fun helperComplete(system: ByteArray, user: ByteArray, maxTokens: Int): ByteArray
 }

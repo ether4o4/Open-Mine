@@ -39,6 +39,9 @@ data class GuideState(
     val tutorialComplete: Boolean = false,
     val autonomy: AutonomyMode = AutonomyMode.ASK_EVERY_TIME,
     val grantedFolders: List<String> = emptyList(),
+    val helperInstalled: Boolean = false,
+    val helperProgress: Float? = null,
+    val helperNote: String = "",
 )
 
 /**
@@ -61,6 +64,9 @@ class GuideAgent private constructor(private val context: Context) {
     /** Tool call waiting on a system picker; its result is the user's choice, reported later. */
     private var externalCall: GuideAction? = null
     private var knowledge: Pair<Long, KnowledgeIndex>? = null
+    private val helper = HelperEngine(BuiltInModels.file(context.filesDir, BuiltInModels.HELPER))
+    private val tagger = NoteTagger(File(context.filesDir, "ai/note-tags.json")) { system, user -> helper.complete(system, user, 120) }
+    private var helperJob: Job? = null
 
     init {
         scope.launch { server.state.collect { s -> update { it.copy(lfmServer = s, lfmNote = if (s == LocalLlmServer.State.FAILED) server.lastError else it.lfmNote) } } }
@@ -72,6 +78,7 @@ class GuideAgent private constructor(private val context: Context) {
     private fun load(): GuideState {
         val messages = runCatching { JSONArray(file.readText()).let { a -> List(a.length()) { GuideMessage.from(a.getJSONObject(it)) } } }.getOrDefault(emptyList())
         return GuideState(messages = messages, lfmInstalled = BuiltInModels.installed(context.filesDir, BuiltInModels.LFM3),
+            helperInstalled = BuiltInModels.installed(context.filesDir, BuiltInModels.HELPER),
             tutorialComplete = prefs.getBoolean("tutorial_complete", false),
             autonomy = runCatching { AutonomyMode.valueOf(prefs.getString("autonomy", "")!!) }.getOrDefault(AutonomyMode.ASK_EVERY_TIME),
             grantedFolders = context.contentResolver.persistedUriPermissions.map { it.uri.toString() })
@@ -323,6 +330,45 @@ class GuideAgent private constructor(private val context: Context) {
 
     fun stopLfm() { scope.launch { server.stop() } }
 
+    // ---- Optional helper model -----------------------------------------------------------------
+
+    fun downloadHelper() {
+        if (helperJob?.isActive == true) return
+        helperJob = scope.launch {
+            update { it.copy(helperProgress = 0f, helperNote = "Downloading ${BuiltInModels.HELPER.displayName}…") }
+            try {
+                BuiltInModels.download(context.filesDir, BuiltInModels.HELPER, { got, total -> update { it.copy(helperProgress = got.toFloat() / total) } }) { ensureActive() }
+                update { it.copy(helperInstalled = true, helperProgress = null, helperNote = "Verified by SHA-256.") }
+                tagNow()
+            } catch (e: CancellationException) { update { it.copy(helperProgress = null, helperNote = "Download paused; progress is kept.") }; throw e }
+            catch (e: Exception) { update { it.copy(helperProgress = null, helperNote = "Download failed: ${e.message}") } }
+        }
+    }
+
+    private fun tagInBackground() { if (helperJob?.isActive != true) helperJob = scope.launch { tagNow() } }
+
+    /** Tags untagged notes, then rebuilds the index so search uses the new tags. */
+    private suspend fun tagNow() {
+        val docs = KnowledgeSources.collect(context)
+        val pending = tagger.missing(docs).size
+        if (pending == 0) { update { it.copy(helperNote = "All ${docs.size} notes are tagged for search.") }; return }
+        update { it.copy(helperNote = "Tagging $pending notes for search…") }
+        val done = runInterruptible { tagger.tagMissing(docs) }
+        knowledge = null
+        update { it.copy(helperNote = "Tagged $done of $pending notes for search.") }
+    }
+
+    fun removeHelper() {
+        helperJob?.cancel()
+        scope.launch {
+            helper.unload()
+            BuiltInModels.file(context.filesDir, BuiltInModels.HELPER).delete()
+            java.io.File(BuiltInModels.directory(context.filesDir), BuiltInModels.HELPER.fileName + ".verified").delete()
+            knowledge = null
+            update { it.copy(helperInstalled = false, helperNote = "Helper removed; search uses note text only.") }
+        }
+    }
+
     // ---- Tutorial and autonomy ----------------------------------------------------------------
 
     fun finishTutorial(mode: AutonomyMode) {
@@ -342,8 +388,10 @@ class GuideAgent private constructor(private val context: Context) {
         val revision = OpenMineObjectStore.revision.value.toLong() * 31 + (File(context.filesDir, "ai_memory").listFiles()?.size ?: 0) * 7 +
             (File(context.filesDir, "knowledge_documents").listFiles()?.size ?: 0)
         knowledge?.takeIf { it.first == revision }?.let { return it.second }
-        val index = KnowledgeIndex(KnowledgeSources.collect(context))
+        val docs = KnowledgeSources.collect(context)
+        val index = KnowledgeIndex(if (_state.value.helperInstalled) tagger.apply(docs) else docs)
         knowledge = revision to index
+        if (_state.value.helperInstalled && tagger.missing(docs).isNotEmpty()) tagInBackground()
         return index
     }
 

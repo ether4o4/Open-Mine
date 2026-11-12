@@ -18,6 +18,11 @@ object BuiltInModels {
         "https://huggingface.co/AtomicChat/LFM3-1.7B-Uncensored-GGUF/resolve/3ad712542eb9de349dbd28f2739b69c925cdec7d/LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf",
         1_132_208_000, "b22df65673b54ed326f18f74826d76f3b65dadc237ffd6306cd52be04544827d", "LFM Open License v1.0")
 
+    /** Optional helper (LiquidAI LFM2.5-230M) for background tagging. Revision 0350206 of the GGUF repo. */
+    val HELPER = BuiltInModel("lfm2.5-230m", "LFM2.5 230M helper", "LFM2.5-230M-Q4_K_M.gguf",
+        "https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF/resolve/03502067c64ce32ac4fe87b0cec0310a1a13d3e9/LFM2.5-230M-Q4_K_M.gguf",
+        153_406_304, "7bbd90384d3deffe4c646ec9643b212802d32d4ce417c90a1ec9282100650062", "LFM Open License v1.0")
+
     fun directory(filesDir: File) = File(filesDir, "ai/models").apply { mkdirs() }
     fun file(filesDir: File, model: BuiltInModel) = File(directory(filesDir), model.fileName)
     /** A model counts as installed only after its verified receipt exists and the size still matches. */
