@@ -7,10 +7,9 @@ import org.junit.Test
 
 class GuideToolsTest {
     @Test fun schemasExportForBothRuntimes() {
-        val cactus = JSONArray(GuideTool.cactusJson())
-        assertEquals(GuideTool.entries.size, cactus.length())
-        assertEquals("command", cactus.getJSONObject(GuideTool.run_command.ordinal).getJSONObject("parameters").getJSONArray("required").getString(0))
         val openAi = GuideTool.openAiJson()
+        assertEquals(GuideTool.entries.size, openAi.length())
+        assertEquals("command", openAi.getJSONObject(GuideTool.run_command.ordinal).getJSONObject("function").getJSONObject("parameters").getJSONArray("required").getString(0))
         assertEquals("function", openAi.getJSONObject(0).getString("type"))
     }
     @Test fun validationRejectsUnknownToolsExtraArgumentsAndWrongTypes() {

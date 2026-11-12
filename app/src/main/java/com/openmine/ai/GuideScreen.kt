@@ -108,8 +108,6 @@ private val GPanel = Color(0xFF071224)
 @Composable private fun ModelStatus(state: GuideState, agent: GuideAgent) {
     Surface(color = GPanel, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("${if (state.needleReady) "●" else "○"} Needle 3 · quick actions", color = if (state.needleReady) GGreen else GAmber, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            if (!state.needleReady && state.needleNote.isNotBlank()) Text(state.needleNote, color = GMuted, fontSize = 12.sp)
             val lfmColor = when (state.lfmServer) { LocalLlmServer.State.READY -> GGreen; LocalLlmServer.State.FAILED -> GAmber; else -> GMuted }
             Text("${if (state.lfmServer == LocalLlmServer.State.READY) "●" else "○"} LFM3 1.7B Uncensored · conversation", color = lfmColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             state.downloadProgress?.let { p ->

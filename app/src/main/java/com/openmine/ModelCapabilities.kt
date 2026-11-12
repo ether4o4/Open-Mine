@@ -59,12 +59,13 @@ object ModelCatalog {
      */
     val candidates:List<ModelProfile> = listOf(
         ModelProfile("botpsy-0.8b","BotPsy 0.8B",setOf(ModelRole.ROUTER),ModelRuntime.LLAMA_CPP_GGUF,true,8192,900,
-            "Confirm on model card",notes="Intent and tool routing candidate. Overlaps Needle 3; ship only one router unless benchmarks justify both."),
+            "Confirm on model card",notes="Intent and tool routing candidate; unbenchmarked."),
         ModelProfile("needle-3","Cactus Needle 3",setOf(ModelRole.ROUTER,ModelRole.TOOL_SPECIALIST,ModelRole.EXTRACTION),ModelRuntime.CACTUS,true,4096,128,
             "Source-available (personal/hobby use reported); commercial redistribution unconfirmed",
-            notes="Requires the Cactus runtime, which is not integrated. Not runnable in this build."),
-        ModelProfile("lfm-1.7b","Liquid LFM 1.7B (GGUF)",setOf(ModelRole.ROUTER,ModelRole.EXTRACTION,ModelRole.GENERAL),ModelRuntime.LLAMA_CPP_GGUF,true,32768,1600,
-            "LFM Open License (confirm version)",notes="The bundled engine includes the lfm2/lfm2moe architectures. Abliterated variants are third-party modifications; review their cards."),
+            notes="Evaluated and not shipped: on 45 unseen setup requests it chose 10 actions right and 10 wrong, and its confidence did not separate them. Needs the Cactus runtime."),
+        ModelProfile("lfm3-1.7b-uncensored","LFM3 1.7B Uncensored (AtomicChat)",setOf(ModelRole.ROUTER,ModelRole.TOOL_SPECIALIST,ModelRole.EXTRACTION,ModelRole.GENERAL),ModelRuntime.LLAMA_CPP_GGUF,true,32768,1600,
+            "LFM Open License v1.0",
+            notes="Open Mine's built-in model, downloaded on first run. 37 of 38 unseen setup actions routed correctly on a host test; phone speed unmeasured."),
         ModelProfile("gemma-4-e2b","Gemma 4 E2B (GGUF)",setOf(ModelRole.GENERAL,ModelRole.TOOL_SPECIALIST),ModelRuntime.LLAMA_CPP_GGUF,true,32768,3600,
             "Gemma terms (confirm)",notes="Primary general assistant candidate. Text inference only through the bundled server."),
         ModelProfile("gemma-4-e4b","Gemma 4 E4B (GGUF)",setOf(ModelRole.GENERAL,ModelRole.TOOL_SPECIALIST),ModelRuntime.LLAMA_CPP_GGUF,true,32768,6000,

@@ -31,8 +31,6 @@ data class GuideState(
     val pending: GuideAction? = null,
     val busy: Boolean = false,
     val status: String = "",
-    val needleReady: Boolean = false,
-    val needleNote: String = "",
     val lfmInstalled: Boolean = false,
     val lfmServer: LocalLlmServer.State = LocalLlmServer.State.STOPPED,
     val lfmNote: String = "",
@@ -44,8 +42,8 @@ data class GuideState(
 )
 
 /**
- * The built-in setup and knowledge guide. Needle 3 (bundled) routes requests to tools in under a second;
- * LFM3 (downloaded) holds the conversation and handles anything Needle is unsure of. Every consequential
+ * The built-in setup and knowledge guide, run by LFM3 on the phone. Before LFM3 is downloaded, the step
+ * buttons drive setup and typed requests get at most a keyword suggestion. Every consequential
  * action is validated in Kotlin and, per [ApprovalPolicy], approved by the user before it runs.
  */
 class GuideAgent private constructor(private val context: Context) {
@@ -54,7 +52,6 @@ class GuideAgent private constructor(private val context: Context) {
     private val file = File(context.filesDir, "ai/guide-conversation.json")
     private val runtime get() = OpenMineRuntime.get(context)
     private val server = LocalLlmServer.get()
-    private val needle = NeedleEngine(BuiltInModels.file(context.filesDir, BuiltInModels.NEEDLE3))
     private val _state = MutableStateFlow(load())
     val state: StateFlow<GuideState> = _state
     private var job: Job? = null
@@ -66,7 +63,6 @@ class GuideAgent private constructor(private val context: Context) {
     private var knowledge: Pair<Long, KnowledgeIndex>? = null
 
     init {
-        scope.launch { prepareNeedle() }
         scope.launch { server.state.collect { s -> update { it.copy(lfmServer = s, lfmNote = if (s == LocalLlmServer.State.FAILED) server.lastError else it.lfmNote) } } }
         if (_state.value.messages.isEmpty()) post("assistant", WELCOME)
     }
@@ -87,15 +83,6 @@ class GuideAgent private constructor(private val context: Context) {
             val tmp = File(file.parentFile, file.name + ".tmp"); tmp.writeText(a.toString()); tmp.renameTo(file) }
     }
 
-    private suspend fun prepareNeedle() {
-        val result = runCatching {
-            withContext(Dispatchers.IO) { BuiltInModels.installBundled(context.filesDir, BuiltInModels.NEEDLE3) { context.assets.open(it) } }
-            needle.ensureLoaded()
-        }
-        val error = result.exceptionOrNull()?.message ?: result.getOrNull()
-        update { it.copy(needleReady = error == null, needleNote = error ?: "Needle 3 ready (offline, bundled)") }
-    }
-
     // ---- User input ---------------------------------------------------------------------------
 
     fun send(text: String) {
@@ -104,7 +91,7 @@ class GuideAgent private constructor(private val context: Context) {
         job = scope.launch {
             update { it.copy(busy = true, status = "Thinking…") }
             try {
-                if (server.state.value == LocalLlmServer.State.READY) lfmTurn(message) else needleTurn(message)
+                if (server.state.value == LocalLlmServer.State.READY) lfmTurn(message) else keywordTurn(message)
             } catch (e: CancellationException) { post("system", "Stopped."); throw e }
             catch (e: Exception) { post("system", "Something went wrong: ${e.message}. Nothing else was changed.") }
             finally { update { it.copy(busy = false, status = "") } }
@@ -120,21 +107,15 @@ class GuideAgent private constructor(private val context: Context) {
         job = scope.launch { offer(action) }
     }
 
-    private suspend fun needleTurn(message: String) {
-        val route = if (_state.value.needleReady) needle.route(message, GuideTool.cactusJson(), GuideTool.names, NEEDLE_SYSTEM)
-        else NeedleRoute(null, JSONObject(), 0.0, _state.value.needleNote)
-        if (!NeedleResult.isConfident(route)) {
-            post("assistant", buildString {
-                append("I'm not sure which step you mean")
-                if (!_state.value.lfmInstalled) append(". Download the LFM3 chat model so I can understand free-form questions; until then, use the buttons above")
-                else append(". Start LFM3 above for full conversation, or pick one of the buttons")
-                append(".")
-            })
-            return
-        }
-        val action = runCatching { GuideActions.validate(route.tool!!, route.arguments) }.getOrElse { post("system", it.message.orEmpty()); return }
-        post("assistant", "Needle suggests: ${action.summary}")
-        offer(action)
+    /** Before LFM3 runs: a fixed keyword match is offered for approval; nothing is guessed beyond it. */
+    private suspend fun keywordTurn(message: String) {
+        val lfmHint = if (!_state.value.lfmInstalled) "Download the LFM3 chat model (step 1) and I'll understand anything you type."
+            else "Start LFM3 above and I'll understand anything you type."
+        val match = GuideKeywords.suggest(message)
+        if (match == null) { post("assistant", "I can't understand free-form requests until LFM3 is running. $lfmHint Meanwhile, use the step buttons above."); return }
+        val action = runCatching { GuideActions.validate(match.first.name, JSONObject(match.second)) }.getOrElse { post("system", it.message.orEmpty()); return }
+        post("assistant", "It sounds like you want: ${action.summary} Approve it below, or decline. $lfmHint")
+        update { it.copy(pending = action) }
     }
 
     /** Either asks the user or runs immediately, depending on the approval policy. */
@@ -368,8 +349,7 @@ class GuideAgent private constructor(private val context: Context) {
 
     companion object {
         const val MAX_ROUNDS = 6
-        const val WELCOME = "Hi, I'm Open Mine's built-in guide. I run on this phone. Needle 3 is included for quick setup actions; LFM3 adds full offline conversation after a one-time download.\n\nUse the steps above, or tell me what you want to set up. I'll always show you what I'm about to do first."
-        private const val NEEDLE_SYSTEM = "You are the setup assistant inside the Open Mine Android app. Pick the single tool that matches what the user asked."
+        const val WELCOME = "Hi, I'm Open Mine's built-in guide. I run entirely on this phone using LFM3, which needs a one-time download (step 1).\n\nUse the steps above to get started. I'll always show you what I'm about to do before I do it."
         @Volatile private var instance: GuideAgent? = null
         fun get(c: Context) = instance ?: synchronized(this) { instance ?: GuideAgent(c.applicationContext).also { instance = it } }
     }

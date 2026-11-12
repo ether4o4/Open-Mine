@@ -44,10 +44,6 @@ enum class GuideTool(
         val names = entries.map { it.name }.toSet()
         fun of(name: String) = entries.firstOrNull { it.name == name }
 
-        /** Needle's tool format: a JSON array of {name, description, parameters}. */
-        fun cactusJson(tools: Collection<GuideTool> = entries): String =
-            JSONArray().apply { tools.forEach { put(JSONObject().put("name", it.name).put("description", it.description).put("parameters", it.schema())) } }.toString()
-
         /** OpenAI-compatible tool definitions for LFM3 through the embedded server. */
         fun openAiJson(tools: Collection<GuideTool> = entries): JSONArray =
             JSONArray().apply { tools.forEach { put(JSONObject().put("type", "function").put("function",

@@ -25,10 +25,9 @@ signing key. The package remains `com.openmine`.
 
 ## New in 0.5.0-dev (source)
 
-- **Built-in AI from first launch:** Needle 3 (bundled, 35 MB) routes setup actions instantly;
-  LFM3 1.7B Uncensored (one-tap 1.13 GB verified download) holds the conversation. Both run on
-  the phone through an in-process llama.cpp/Cactus library; no API key or terminal needed.
-- **Open Mine Guide** opens on first launch: setup steps, approval for every action during the
+- **Built-in AI:** LFM3 1.7B Uncensored runs on the phone through an in-process llama.cpp engine
+  (one-tap 1.13 GB verified download). No API key or terminal needed.
+- **Open Mine Guide** is offered on first launch: setup steps, approval for every action during the
   tutorial, then a choice of full autonomy or ask every time. It can install the terminal, run
   commands (`apk add …`), request folder access, import models and diagnose problems.
 - **Knowledge without context overload:** tiny index in the prompt, BM25 `search_knowledge` and

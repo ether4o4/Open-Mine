@@ -75,8 +75,8 @@ needs a real load and inference result in the intended runtime:
 
 | Candidate | Runtime | Status |
 |---|---|---|
-| BotPsy 0.8B | llama.cpp GGUF | Unverified; overlaps Needle 3 as a router |
-| Cactus Needle 3 | Cactus engine | **Not runnable** – Cactus is not integrated; license reported as personal/hobby |
+| BotPsy 0.8B | llama.cpp GGUF | Unverified |
+| Cactus Needle 3 | Cactus engine | Evaluated and removed: 10 right, 10 wrong on 45 unseen requests (see BUILT_IN_AI.md) |
 | Liquid LFM 1.7B | llama.cpp GGUF | Unverified; `lfm2`/`lfm2moe` import now accepted (see below) |
 | Gemma 4 E2B / E4B | llama.cpp GGUF | Unverified in this build |
 | Nanbeige 3B | llama.cpp GGUF | Unverified |

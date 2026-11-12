@@ -9,15 +9,10 @@ import java.security.MessageDigest
 /** A model Open Mine can provide itself, with an immutable source revision and digest. */
 data class BuiltInModel(
     val id: String, val displayName: String, val fileName: String, val url: String,
-    val sizeBytes: Long, val sha256: String, val license: String, val bundledAsset: String? = null,
+    val sizeBytes: Long, val sha256: String, val license: String,
 )
 
 object BuiltInModels {
-    /** Needle 3: shipped in the APK (35 MB, Apache-2.0). Revision c95d25b of Cactus-Compute/needle3. */
-    val NEEDLE3 = BuiltInModel("needle3", "Needle 3", "needle3.cact",
-        "https://huggingface.co/Cactus-Compute/needle3/resolve/c95d25b4efa1e9601e785d92438e4ade0dbddbf8/needle3.cact",
-        35_335_380, "c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38", "Apache-2.0", bundledAsset = "ai/needle3.cact")
-
     /** LFM3 1.7B Uncensored (AtomicChat), downloaded on first run. Revision 3ad7125 of the GGUF repo. */
     val LFM3 = BuiltInModel("lfm3-1.7b-uncensored", "LFM3 1.7B Uncensored", "LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf",
         "https://huggingface.co/AtomicChat/LFM3-1.7B-Uncensored-GGUF/resolve/3ad712542eb9de349dbd28f2739b69c925cdec7d/LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf",
@@ -36,18 +31,6 @@ object BuiltInModels {
         file.inputStream().use { input -> val buffer = ByteArray(1 shl 20)
             while (true) { ensureActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } }
         return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    /** Copies the bundled asset to app storage once (mmap needs a real file) and verifies its digest. */
-    fun installBundled(filesDir: File, model: BuiltInModel, open: (String) -> java.io.InputStream): File {
-        val target = file(filesDir, model)
-        if (installed(filesDir, model)) return target
-        val partial = File(target.parentFile, target.name + ".part")
-        open(model.bundledAsset ?: error("${model.displayName} is not bundled")).use { input -> partial.outputStream().use { input.copyTo(it, 1 shl 20) } }
-        val digest = sha256(partial)
-        check(digest == model.sha256 && partial.length() == model.sizeBytes) { "Bundled ${model.displayName} failed verification; the APK may be damaged." }
-        publish(partial, target, model)
-        return target
     }
 
     /**

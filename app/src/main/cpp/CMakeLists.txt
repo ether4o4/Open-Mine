@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(openmine_ai C CXX)
 
-# One self-contained library: the embedded llama.cpp server (LFM3 and other GGUF chat models)
-# and, on ARM, the Cactus runtime for Needle 3. Nothing is downloaded at build time; llama.cpp is
-# the pinned git submodule at app/src/main/cpp/llama.cpp (tag b12318, 7021f7e).
+# One self-contained library: the embedded llama.cpp server for LFM3 and other GGUF chat models.
+# Nothing is downloaded at build time; llama.cpp is the pinned git submodule at
+# app/src/main/cpp/llama.cpp (tag b12318, 7021f7e).
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -39,13 +39,7 @@ add_subdirectory(llama.cpp EXCLUDE_FROM_ALL)
 
 add_library(openmine_ai SHARED openmine_ai.cpp)
 target_include_directories(openmine_ai PRIVATE
-    llama.cpp/tools/server llama.cpp/common llama.cpp/include cactus/include)
+    llama.cpp/tools/server llama.cpp/common llama.cpp/include)
 target_link_libraries(openmine_ai PRIVATE llama-server-impl llama-common llama android log)
 
-if(ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
-    add_library(cactus STATIC IMPORTED)
-    set_target_properties(cactus PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/cactus/${ANDROID_ABI}/libcactus.a)
-    target_link_libraries(openmine_ai PRIVATE cactus)
-    target_compile_definitions(openmine_ai PRIVATE OPENMINE_HAS_CACTUS=1)
-endif()
 target_link_options(openmine_ai PRIVATE "-Wl,--exclude-libs,ALL" "-Wl,-z,max-page-size=16384")

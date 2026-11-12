@@ -26,7 +26,7 @@ class BuiltInServerTest {
         assertTrue("CI must push the GGUF first: $model", model.isFile)
         assertNull("Native library must load: ${NativeAi.loadError}", NativeAi.loadError)
         val evidence = JSONObject().put("abis", JSONArray(Build.SUPPORTED_ABIS.toList())).put("api", Build.VERSION.SDK_INT)
-            .put("cactusAvailable", NativeAi.cactusAvailable()).put("model", model.name)
+            .put("model", model.name)
         val server = LocalLlmServer(port = 18183)
         val key = LocalLlmServer.installKey(target.noBackupFilesDir)
         try {

@@ -12,10 +12,4 @@ object NativeAi {
     @JvmStatic external fun serverStop()
     @JvmStatic external fun serverRunning(): Boolean
 
-    @JvmStatic external fun cactusAvailable(): Boolean
-    /** Returns null on success, otherwise "ERROR: ..." */
-    @JvmStatic external fun cactusLoad(path: String): String?
-    @JvmStatic external fun cactusInit(system: String, toolsJson: String, threads: Int): String?
-    @JvmStatic external fun cactusComplete(input: String, maxTokens: Int): String
-    @JvmStatic external fun cactusEmbed(input: String): FloatArray?
 }

@@ -229,7 +229,7 @@ private fun recordType(screen: Int): String? = when (screen) {
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Diagnostics", style = MaterialTheme.typography.headlineSmall)
-        Button(onOpenGuide, Modifier.fillMaxWidth()) { Text("Open the built-in guide (Needle 3 + LFM3)") }
+        Button(onOpenGuide, Modifier.fillMaxWidth()) { Text("Open the built-in AI guide (LFM3)") }
         Text("Open Mine ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · ${BuildConfig.APPLICATION_ID}")
         Text("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
         Text("Shell: ${if (healthy) "execution probe passed" else "not verified"}\nModel: ${if (model) "last HTTP health check passed" else "not verified or stopped"}\n$status")
