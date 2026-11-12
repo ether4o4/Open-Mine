@@ -116,7 +116,7 @@ def inspect_build(destination, tools, source):
     actual = json.loads((inspected / 'apk-evidence.json').read_text())
     require(actual == evidence, 'Independent APK signature/package/version inspection differs from build evidence')
     require((evidence['package'], evidence['version_name'], evidence['version_code']) ==
-            ('com.openmine', '0.4.2-dev', 12), 'Unexpected application or release version')
+            ('com.openmine', '0.5.0-dev', 13), 'Unexpected application or release version')
     require(evidence['published_041_signer_sha256'] == PUBLISHED_041_SIGNER,
             'Published 0.4.1 signing identity changed in evidence')
     require(evidence['published_041_signer_matches'] ==

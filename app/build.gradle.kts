@@ -17,16 +17,23 @@ android {
     }
     namespace = "com.openmine"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "com.openmine"
         minSdk = 26
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.4.2-dev"
+        versionCode = 13
+        versionName = "0.5.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release") } }
     }
+    // Built-in AI: llama.cpp (pinned submodule) for LFM3 and the Cactus runtime for Needle 3.
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.31.6" } }
+    androidResources { noCompress += listOf("cact", "gguf") }
     buildFeatures { compose = true; buildConfig = true }
+    // Native code is always built optimized; debug APKs otherwise make on-device inference unusably slow.
+    buildTypes.getByName("debug").externalNativeBuild { cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" } }
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -27,7 +27,7 @@ adb -e install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.
 if [ -n "${OPENMINE_TEST_CLASSES:-}" ]; then
   test_filter=(-e class "$OPENMINE_TEST_CLASSES")
 else
-  test_filter=(-e notClass com.openmine.NativeRuntimeTest,com.openmine.GgufInferenceTest,com.openmine.OllamaRuntimeTest,com.openmine.RestartPersistenceTest)
+  test_filter=(-e notClass com.openmine.NativeRuntimeTest,com.openmine.GgufInferenceTest,com.openmine.BuiltInServerTest,com.openmine.OllamaRuntimeTest,com.openmine.RestartPersistenceTest)
 fi
 adb -e shell am instrument -w -r "${test_filter[@]}" com.openmine.test/androidx.test.runner.AndroidJUnitRunner > verification/android/instrumentation.txt
 cat verification/android/instrumentation.txt

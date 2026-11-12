@@ -63,6 +63,8 @@ class MainActivity : ComponentActivity() {
     val runtime = remember { OpenMineRuntime.get(context) }
     var screen by remember { mutableIntStateOf(preferences.getInt("screen", 3).coerceIn(0, 12)) }
     var overlay by remember { mutableStateOf(preferences.getString("route", "").orEmpty()) }
+    // The approved HUD stays the first screen; until the guide is opened or dismissed, a bar offers it.
+    var guideOffer by remember { mutableStateOf(!preferences.getBoolean("guide_offered", false)) }
     var openedId by remember { mutableStateOf(preferences.getString("opened_record", "").orEmpty()) }
     var active by remember { mutableStateOf(preferences.getString("active_$screen", preferences.getString("active", "")).orEmpty()) }
     var contextIds by remember { mutableStateOf(preferences.getStringSet("context", emptySet())?.toSet().orEmpty()) }
@@ -107,6 +109,7 @@ class MainActivity : ComponentActivity() {
     }
     fun route(value: String, id: String = "") {
         focus.clearFocus()
+        if (value == "guide" && guideOffer) { guideOffer = false; preferences.edit().putBoolean("guide_offered", true).apply() }
         overlay = value; openedId = id
         preferences.edit().putString("route", value).putString("opened_record", id).apply()
     }
@@ -146,6 +149,16 @@ class MainActivity : ComponentActivity() {
                             navigate(12)
                         }) }
                     }
+                    overlay == "guide" -> com.openmine.ai.GuideScreen(onBack = { route("") }, onOpenChat = {
+                        scope.launch {
+                            val server = com.openmine.ai.LocalLlmServer.get()
+                            val key = withContext(Dispatchers.IO) { com.openmine.ai.LocalLlmServer.installKey(context.noBackupFilesDir) }
+                            val assistant = AssistantSessionController.get(context)
+                            assistant.configure(endpoint = server.endpoint, model = "local")
+                            assistant.setKey(key)
+                            navigate(12)
+                        }
+                    })
                     overlay == "project" && opened != null -> ProjectWorkspace(opened) { route("") }
                     overlay == "tool" && opened != null -> ReviewedToolScreen(opened) { route("") }
                     overlay.startsWith("library:") || overlay == "record" -> OperationalLibraryScreen(
@@ -163,6 +176,11 @@ class MainActivity : ComponentActivity() {
                             Text(loadError.orEmpty(), Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
                             TextButton({ refresh++ }) { Text("Retry") }
                         } else if (loading && snapshot == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (guideOffer) Row(Modifier.fillMaxWidth().testTag("guide-offer").padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("New here? The built-in AI guide can set up Open Mine for you.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton({ route("guide") }, Modifier.testTag("guide-offer-open")) { Text("Start") }
+                            TextButton({ guideOffer = false; preferences.edit().putBoolean("guide_offered", true).apply() }) { Text("Later") }
+                        }
                         Box(Modifier.weight(1f)) {
                             ReferenceHud(screen, animations && systemMotion, active, contextIds, records, status,
                                 onNavigate = ::navigate, onSelect = ::select, onToggleContext = { it.record?.let(::toggle) },
@@ -171,8 +189,8 @@ class MainActivity : ComponentActivity() {
                                 when (destination) {
                                     8 -> BrowserScreen(onExit = { navigate(3) })
                                     9 -> OperationalRuntimeScreen(context, terminalOnly = true)
-                                    10 -> DiagnosticsScreen(context)
-                                    11 -> SettingsScreen(animations, { animations = it; preferences.edit().putBoolean("animations", it).apply() },
+                                    10 -> DiagnosticsScreen(context, onOpenModels = { route("runtime") }, onOpenChat = { navigate(12) }, onOpenGuide = { route("guide") })
+                                    11 -> SettingsScreen({ route("guide") }, animations, { animations = it; preferences.edit().putBoolean("animations", it).apply() },
                                         haptics, { haptics = it; preferences.edit().putBoolean("haptics", it).apply() })
                                     12 -> OperationalAssistantScreen(context, onOpenModels = { route("runtime") })
                                     else -> OperationalLibraryScreen(recordType(destination), contextIds = contextIds,
@@ -193,7 +211,7 @@ private fun recordType(screen: Int): String? = when (screen) {
     4 -> "SKILL"; 5 -> "MISSION"; 6 -> "TOOL"; 7 -> "FILE"; else -> null
 }
 
-@Composable private fun DiagnosticsScreen(context: Context) {
+@Composable private fun DiagnosticsScreen(context: Context, onOpenModels: () -> Unit, onOpenChat: () -> Unit, onOpenGuide: () -> Unit) {
     val runtime = remember { OpenMineRuntime.get(context) }
     val healthy by runtime.shellHealthy.collectAsState()
     val model by runtime.modelHealthy.collectAsState()
@@ -211,6 +229,7 @@ private fun recordType(screen: Int): String? = when (screen) {
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Diagnostics", style = MaterialTheme.typography.headlineSmall)
+        Button(onOpenGuide, Modifier.fillMaxWidth()) { Text("Open the built-in AI guide (LFM3)") }
         Text("Open Mine ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · ${BuildConfig.APPLICATION_ID}")
         Text("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
         Text("Shell: ${if (healthy) "execution probe passed" else "not verified"}\nModel: ${if (model) "last HTTP health check passed" else "not verified or stopped"}\n$status")
@@ -228,12 +247,15 @@ private fun recordType(screen: Int): String? = when (screen) {
             finally { refreshing = false }
         } }, enabled = !refreshing) { Text(if (refreshing) "Rebuilding index…" else "Rebuild knowledge index") }
         TextButton({ refresh++ }) { Text("Refresh diagnostics") }
+        HorizontalDivider()
+        SetupAssistantPanel(context, onOpenModels, onOpenChat)
     }
 }
 
-@Composable private fun SettingsScreen(animations: Boolean, setAnimations: (Boolean) -> Unit, haptics: Boolean, setHaptics: (Boolean) -> Unit) {
+@Composable private fun SettingsScreen(onOpenGuide: () -> Unit, animations: Boolean, setAnimations: (Boolean) -> Unit, haptics: Boolean, setHaptics: (Boolean) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
+        OutlinedButton(onOpenGuide) { Text("Built-in guide and approvals") }
         Setting("Animations", "Workspace motion; Android reduced motion takes precedence.", animations, setAnimations, "setting-animations")
         Setting("Haptic feedback", "Touch feedback when switching workspace sections.", haptics, setHaptics, "setting-haptics")
         Text("Browser and model connection settings are saved in their respective workspaces. Saved API keys use Android Keystore and are excluded from backups.")

@@ -10,6 +10,9 @@ data class GgufInfo(val architecture:String,val tensors:Long,val bytes:Long) {
 
 /** Bounded metadata inspection; weights are never materialized as a byte array/text. */
 object GgufMetadata {
+    /** Architectures accepted for import. Each name is present in the bundled llama.cpp engine's architecture table. */
+    val supportedArchitectures=setOf("llama","qwen2","qwen2moe","qwen3","qwen3moe","qwen35","qwen35moe","qwen3next","gemma","gemma2","gemma3","gemma3n","gemma4",
+        "phi2","phi3","mistral","stablelm","starcoder2","gpt2","gptneox","falcon","lfm2","lfm2moe","smollm3","granite","granitemoe")
     fun inspect(file:File):GgufInfo = RandomAccessFile(file,"r").use { input ->
         fun u32():Long = Integer.reverseBytes(input.readInt()).toLong() and 0xffffffffL
         fun u64():Long = java.lang.Long.reverseBytes(input.readLong()).also { require(it>=0){"GGUF length overflows"} }
@@ -41,8 +44,7 @@ object GgufMetadata {
             val key=string();val type=u32();val data=value(type)
             if(key=="general.architecture")architecture=data
         }
-        val supported=setOf("llama","qwen2","qwen2moe","qwen3","qwen3moe","qwen35","qwen35moe","qwen3next","gemma","gemma2","gemma3","gemma3n","gemma4","phi2","phi3","mistral","stablelm","starcoder2","gpt2","gptneox","falcon")
-        require(architecture in supported){"Unsupported model architecture: ${architecture ?: "missing"}. Use a compatible llama.cpp GGUF."}
+        require(architecture in supportedArchitectures){"Unsupported model architecture: ${architecture ?: "missing"}. Use a compatible llama.cpp GGUF."}
         var largestOffset=0L
         repeat(tensors.toInt()) {
             string();val dimensions=u32();require(dimensions in 1L..4L){"Invalid tensor dimensions"}
