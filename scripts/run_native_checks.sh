@@ -56,7 +56,22 @@ assert not re.search(r'INSTRUMENTATION_STATUS_CODE: -[34]\b', text), 'Android GG
 assert not any(x in text for x in ('FAILURES!!!', 'INSTRUMENTATION_FAILED', 'Process crashed')), 'Actual GGUF runtime failed'
 PY
 adb -e pull /sdcard/Android/data/com.openmine/files/verification/gguf-inference.json verification/native/gguf-inference.json
+# The in-process llama.cpp server that runs LFM3, exercised with the same real GGUF.
+adb -e push "$RUNNER_TEMP/openmine-runtime-model.gguf" "$model_device_path"
+adb -e shell am instrument -w -r -e class com.openmine.BuiltInServerTest \
+  -e openMineRealGguf true -e openMineGgufPath "$model_device_path" \
+  com.openmine.test/androidx.test.runner.AndroidJUnitRunner > verification/native/builtin-server-instrumentation.txt
+cat verification/native/builtin-server-instrumentation.txt
+builtin_result=0
+python3 - <<'PY' || builtin_result=$?
+import pathlib, re
+text = pathlib.Path('verification/native/builtin-server-instrumentation.txt').read_text()
+match = re.search(r'OK \((\d+) tests?\)', text)
+assert match and int(match.group(1)) > 0, 'Built-in server test failed or did not run'
+assert not any(x in text for x in ('FAILURES!!!', 'INSTRUMENTATION_FAILED', 'Process crashed')), 'Built-in server failed'
+PY
+adb -e pull /sdcard/Android/data/com.openmine/files/verification/builtin-server.json verification/native/builtin-server.json || true
 sha256sum --check verification/native/installed-apk.sha256
 
-# Both suites ran independently; neither failure can hide the other.
-test "$shell_result" = 0 && test "$gguf_result" = 0
+# All suites ran independently; no failure can hide another.
+test "$shell_result" = 0 && test "$gguf_result" = 0 && test "$builtin_result" = 0

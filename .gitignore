@@ -13,3 +13,4 @@ verification/
 
 __pycache__/
 *.pyc
+app/.cxx/
